@@ -175,27 +175,13 @@ At the end:
 
 NOTES
 -----
+- The crawler respects website policies via robots.txt
+- A 10-second timeout is used for each request
+- The User-Agent is set to "StudentWebCrawler/1.0"
+- Press Ctrl+C to stop the crawler at any time
 
-1. From the project root, run python crawler.py.
-2. When prompted, provide:
-   - A starting URL (for example, `https://example.com`)
-   - A search query (for example, privacy)
-3. The crawler will visit up to 25 pages, print progress for each visit, and finish with a list of URLs that contained the query text.
 
-GUI Usage
----------
+================================================================================
+End of README
+================================================================================
 
-1. From the project root, run python gui.py.
-2. Enter the starting URL and search query in the form.
-3. Click Start Crawl to begin; progress appears in the output area as pages are visited.
-4. Use Stop to end the crawl early and keep the results collected so far.
-
-Tips
-----
-
-- Press Ctrl+C to stop the crawl early; partial results collected so far will remain on screen.
-- Use small sites while testing to avoid long crawl times or rate limits.
-
-License
--------
-- MIT License
