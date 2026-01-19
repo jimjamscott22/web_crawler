@@ -15,7 +15,7 @@ Features
 Requirements
 ------------
 
-- Python 3.8+ (tested on Windows 11 with Python 3.11)
+- Python 3.8+ (tested on Windows 11 with Python 3.11; compatibility with Python 3.14 has not yet been verified)
 - requests and beautifulsoup4 (see requirements.txt for the authoritative list)
 - Tkinter is part of the standard library on Windows; on Linux, you may need to install your distro's Tk package (often named python3-tk) to use the GUI.
 
@@ -34,7 +34,7 @@ Usage
 
 1. From the project root, run python crawler.py.
 2. When prompted, provide:
-   - A starting URL (for example, <https://example.com>)
+   - A starting URL (for example, `https://example.com`)
    - A search query (for example, privacy)
 3. The crawler will visit up to 25 pages, print progress for each visit, and finish with a list of URLs that contained the query text.
 
