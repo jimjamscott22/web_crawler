@@ -1317,21 +1317,8 @@ def run_gui():
     gui_logger.addHandler(file_handler)
 
     root = tk.Tk()
-<<<<<<< HEAD
     root.title("Web Crawler - Async Edition" if ASYNC_AVAILABLE else "Web Crawler")
     root.geometry("900x750")
-=======
-    root.title("Web Crawler - Enhanced Edition")
-    root.geometry("900x700")
-    root.configure(background="#f6f3ee")
-    style = ttk.Style(root)
-    if "clam" in style.theme_names():
-        style.theme_use("clam")
-    style.configure("TFrame", background="#f6f3ee")
-    style.configure("TLabelframe", background="#f6f3ee")
-    style.configure("TLabelframe.Label", background="#f6f3ee", font=("Segoe UI", 10, "bold"))
-    style.configure("TLabel", background="#f6f3ee")
->>>>>>> 2c70ca6369b91adfb6c25eb7a9ce0298ecafbc3c
 
     url_var = tk.StringVar()
     query_var = tk.StringVar()
@@ -1340,18 +1327,12 @@ def run_gui():
     same_domain_var = tk.BooleanVar(value=False)
     export_format_var = tk.StringVar(value="json")
     log_level_var = tk.StringVar(value="INFO")
-<<<<<<< HEAD
     
     # Async options
     use_async_var = tk.BooleanVar(value=ASYNC_AVAILABLE)
     concurrency_var = tk.StringVar(value=str(DEFAULT_CONCURRENCY))
     delay_var = tk.StringVar(value=str(DEFAULT_POLITENESS_DELAY))
     
-=======
-    export_dir_var = tk.StringVar(value=os.getcwd())
-    status_var = tk.StringVar(value="Stopped")
-    progress_var = tk.StringVar(value=f"0 / {MAX_URLS_TO_VISIT}")
->>>>>>> 2c70ca6369b91adfb6c25eb7a9ce0298ecafbc3c
     stop_event_holder = {"event": None}
 
     inputs_frame = ttk.LabelFrame(root, text="Inputs", padding=10)
@@ -1366,7 +1347,6 @@ def run_gui():
     query_entry = ttk.Entry(inputs_frame, textvariable=query_var, width=40)
     query_entry.grid(row=1, column=1, sticky="ew", padx=6, pady=4)
 
-<<<<<<< HEAD
     # Row 3: Async options
     async_frame = tk.LabelFrame(root, text="Performance Options", padx=8, pady=4)
     async_frame.grid(row=3, column=0, columnspan=3, sticky="ew", padx=8, pady=4)
@@ -1413,133 +1393,6 @@ def run_gui():
     # Grid stretch
     root.grid_columnconfigure(1, weight=1)
     root.grid_rowconfigure(7, weight=1)
-=======
-    options_frame = ttk.LabelFrame(root, text="Options", padding=10)
-    options_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=6)
-    options_frame.grid_columnconfigure(1, weight=1)
-
-    ttk.Label(options_frame, text="Max URLs (1-200):").grid(row=0, column=0, sticky="w", padx=6, pady=4)
-    max_urls_entry = ttk.Entry(options_frame, textvariable=max_urls_var, width=10)
-    max_urls_entry.grid(row=0, column=1, sticky="w", padx=6, pady=4)
-
-    ttk.Label(options_frame, text="Max Depth (optional):").grid(row=0, column=2, sticky="w", padx=6, pady=4)
-    max_depth_entry = ttk.Entry(options_frame, textvariable=max_depth_var, width=10)
-    max_depth_entry.grid(row=0, column=3, sticky="w", padx=6, pady=4)
-
-    same_domain_check = ttk.Checkbutton(
-        options_frame, text="Crawl same domain only",
-        variable=same_domain_var
-    )
-    same_domain_check.grid(row=1, column=0, columnspan=2, sticky="w", padx=6, pady=4)
-
-    ttk.Label(options_frame, text="Log Level:").grid(row=1, column=2, sticky="e", padx=6, pady=4)
-    log_level_menu = ttk.Combobox(
-        options_frame,
-        textvariable=log_level_var,
-        values=("DEBUG", "INFO", "WARNING", "ERROR"),
-        width=12,
-        state="readonly",
-    )
-    log_level_menu.grid(row=1, column=3, sticky="w", padx=6, pady=4)
-
-    output_frame = ttk.LabelFrame(root, text="Output", padding=10)
-    output_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=6)
-    output_frame.grid_columnconfigure(1, weight=1)
-
-    ttk.Label(output_frame, text="Export Format:").grid(row=0, column=0, sticky="w", padx=6, pady=4)
-    export_frame = ttk.Frame(output_frame)
-    export_frame.grid(row=0, column=1, columnspan=3, sticky="w", padx=6, pady=4)
-    export_json_radio = ttk.Radiobutton(export_frame, text="JSON", variable=export_format_var, value="json")
-    export_csv_radio = ttk.Radiobutton(export_frame, text="CSV", variable=export_format_var, value="csv")
-    export_both_radio = ttk.Radiobutton(export_frame, text="Both", variable=export_format_var, value="both")
-    export_none_radio = ttk.Radiobutton(export_frame, text="None", variable=export_format_var, value="none")
-    export_json_radio.pack(side=tk.LEFT, padx=(0, 6))
-    export_csv_radio.pack(side=tk.LEFT, padx=(0, 6))
-    export_both_radio.pack(side=tk.LEFT, padx=(0, 6))
-    export_none_radio.pack(side=tk.LEFT)
-
-    ttk.Label(output_frame, text="Export Directory:").grid(row=1, column=0, sticky="w", padx=6, pady=4)
-    export_dir_entry = ttk.Entry(output_frame, textvariable=export_dir_var, state="readonly")
-    export_dir_entry.grid(row=1, column=1, sticky="ew", padx=6, pady=4)
-    export_dir_button = ttk.Button(output_frame, text="Browse", width=10)
-    export_dir_button.grid(row=1, column=2, sticky="w", padx=6, pady=4)
-
-    ttk.Label(output_frame, text="Status:").grid(row=2, column=0, sticky="w", padx=6, pady=4)
-    status_label = ttk.Label(output_frame, textvariable=status_var)
-    status_label.grid(row=2, column=1, sticky="w", padx=6, pady=4)
-
-    ttk.Label(output_frame, text="Progress:").grid(row=3, column=0, sticky="w", padx=6, pady=4)
-    progress_bar = ttk.Progressbar(output_frame, maximum=MAX_URLS_TO_VISIT, value=0)
-    progress_bar.grid(row=3, column=1, sticky="ew", padx=6, pady=4)
-    progress_label = ttk.Label(output_frame, textvariable=progress_var)
-    progress_label.grid(row=3, column=2, sticky="w", padx=6, pady=4)
-
-    # Buttons
-    button_frame = ttk.Frame(root)
-    button_frame.grid(row=3, column=0, pady=6, padx=10, sticky="ew")
-    start_button = ttk.Button(button_frame, text="Run Crawl", width=15)
-    start_button.pack(side=tk.LEFT, padx=5)
-    stop_button = ttk.Button(button_frame, text="Stop", state="disabled", width=15)
-    stop_button.pack(side=tk.LEFT, padx=5)
-
-    notebook = ttk.Notebook(root)
-    notebook.grid(row=4, column=0, padx=10, pady=8, sticky="nsew")
-
-    log_tab = ttk.Frame(notebook)
-    results_tab = ttk.Frame(notebook)
-    notebook.add(log_tab, text="Log")
-    notebook.add(results_tab, text="Results")
-
-    log_box = scrolledtext.ScrolledText(log_tab, width=100, height=30, state="disabled")
-    log_box.pack(fill="both", expand=True)
-
-    results_box = scrolledtext.ScrolledText(results_tab, width=100, height=30, state="disabled")
-    results_box.pack(fill="both", expand=True)
-
-    # Grid stretch
-    root.grid_columnconfigure(0, weight=1)
-    root.grid_rowconfigure(4, weight=1)
-
-    def set_inputs_state(enabled):
-        normal_state = "normal" if enabled else "disabled"
-        readonly_state = "readonly" if enabled else "disabled"
-        for widget in (
-            url_entry,
-            query_entry,
-            max_urls_entry,
-            max_depth_entry,
-            same_domain_check,
-            export_json_radio,
-            export_csv_radio,
-            export_both_radio,
-            export_none_radio,
-            export_dir_button,
-        ):
-            try:
-                widget.configure(state=normal_state)
-            except tk.TclError:
-                pass
-        log_level_menu.configure(state=readonly_state)
-        export_dir_entry.configure(state=readonly_state)
-
-    def set_results_text(text):
-        results_box.configure(state="normal")
-        results_box.delete("1.0", "end")
-        results_box.insert("end", text)
-        results_box.configure(state="disabled")
-
-    def update_progress(visited, max_urls):
-        progress_bar.configure(maximum=max_urls)
-        progress_bar.configure(value=visited)
-        progress_var.set(f"{visited} / {max_urls}")
-
-    def choose_export_dir():
-        selected = filedialog.askdirectory(initialdir=export_dir_var.get() or os.getcwd())
-        if selected:
-            export_dir_var.set(selected)
-
-    export_dir_button.configure(command=choose_export_dir)
->>>>>>> 2c70ca6369b91adfb6c25eb7a9ce0298ecafbc3c
 
     def start_crawl():
         start_url = url_var.get().strip()
@@ -1620,7 +1473,6 @@ def run_gui():
             redirector = TextRedirector(log_box, gui_logger)
             try:
                 with redirect_stdout(redirector):
-<<<<<<< HEAD
                     if use_async:
                         # Use async crawl in a new event loop
                         visited_urls_data, matching_urls, crawl_metadata = run_async_crawl(
@@ -1642,19 +1494,6 @@ def run_gui():
                             same_domain_only=same_domain_val,
                             stop_event=stop_event_holder["event"],
                         )
-=======
-                    visited_urls_data, matching_urls, crawl_metadata = crawl(
-                        start_url,
-                        search_query,
-                        max_urls=max_urls_val,
-                        max_depth=max_depth_val,
-                        same_domain_only=same_domain_val,
-                        stop_event=stop_event_holder["event"],
-                        progress_callback=lambda visited, total: root.after(
-                            0, lambda: update_progress(visited, total)
-                        ),
-                    )
->>>>>>> 2c70ca6369b91adfb6c25eb7a9ce0298ecafbc3c
                     print_results(visited_urls_data, matching_urls, search_query, max_urls=max_urls_val)
                     formatted = format_results_for_gui(
                         visited_urls_data,
@@ -1703,7 +1542,6 @@ def run_gui():
         status_var.set("Stopped")
         stop_button.config(state="disabled")
 
-<<<<<<< HEAD
     # Row 6: Buttons
     button_frame = tk.Frame(root)
     button_frame.grid(row=6, column=0, columnspan=3, pady=6, padx=8, sticky="ew")
@@ -1720,10 +1558,6 @@ def run_gui():
     else:
         status_label = tk.Label(button_frame, text="⚠ Async not available (install aiohttp)", fg="orange")
     status_label.pack(side=tk.RIGHT, padx=5)
-=======
-    start_button.configure(command=start_crawl)
-    stop_button.configure(command=stop_crawl)
->>>>>>> 2c70ca6369b91adfb6c25eb7a9ce0298ecafbc3c
 
     url_entry.focus_set()
     root.mainloop()
