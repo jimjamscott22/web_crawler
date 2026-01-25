@@ -1,17 +1,27 @@
 """
-Web Crawler Assignment
-======================
-A BFS-based web crawler that visits 25 unique URLs, respects robots.txt,
-and searches pages for a user-provided query.
+Web Crawler
+===========
+A high-performance async web crawler with BFS traversal, concurrent fetching,
+per-domain rate limiting, and search functionality.
+
+Features:
+- Async HTTP requests with aiohttp for 5-10x faster crawling
+- Per-domain politeness delays to avoid getting blocked
+- Configurable concurrency (number of parallel workers)
+- Retry logic with exponential backoff
+- Respects robots.txt
+- GUI and CLI interfaces
 
 Libraries used:
-- requests: For fetching web pages
+- aiohttp: For async HTTP requests (primary)
+- requests: For sync operations and robots.txt (fallback)
 - BeautifulSoup (bs4): For parsing HTML and extracting links
 - urllib.parse: For URL normalization and joining
 - urllib.robotparser: For robots.txt compliance
 """
 
 import argparse
+import asyncio
 import csv
 import json
 import logging
@@ -20,13 +30,22 @@ import sys
 import threading
 import time
 from contextlib import redirect_stdout
-from collections import deque
+from collections import deque, defaultdict
 from datetime import datetime
 from urllib.parse import urlparse, urljoin
 from urllib.robotparser import RobotFileParser
 
 import requests
 from bs4 import BeautifulSoup
+
+# Try to import aiohttp, fall back to sync-only mode if not available
+try:
+    import aiohttp
+    ASYNC_AVAILABLE = True
+except ImportError:
+    ASYNC_AVAILABLE = False
+    print("Warning: aiohttp not installed. Using synchronous mode only.")
+    print("Install with: pip install aiohttp")
 
 
 # ============================================================================
@@ -35,7 +54,22 @@ from bs4 import BeautifulSoup
 
 MAX_URLS_TO_VISIT = 25  # Total unique URLs to crawl
 REQUEST_TIMEOUT = 10     # Seconds to wait for a response
-USER_AGENT = "StudentWebCrawler/1.0"  # Identifies our crawler to websites
+USER_AGENT = "PersonalWebCrawler/2.0"  # Identifies our crawler to websites
+
+# Async crawling configuration
+DEFAULT_CONCURRENCY = 5  # Number of concurrent requests
+DEFAULT_POLITENESS_DELAY = 1.0  # Seconds between requests to same domain
+MAX_RETRIES = 3  # Maximum retry attempts for failed requests
+RETRY_BACKOFF = 2.0  # Exponential backoff multiplier
+
+# URL filtering - skip these file extensions
+SKIP_EXTENSIONS = {
+    '.pdf', '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.svg', '.webp',
+    '.mp3', '.mp4', '.avi', '.mov', '.wmv', '.flv', '.webm',
+    '.zip', '.rar', '.7z', '.tar', '.gz',
+    '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+    '.exe', '.dmg', '.iso', '.bin'
+}
 
 # New configuration options
 DEFAULT_MAX_DEPTH = None  # None = unlimited
@@ -259,7 +293,145 @@ class URLFrontier:
 
 
 # ============================================================================
-# PAGE FETCHING AND PARSING
+# DOMAIN RATE LIMITER (POLITENESS)
+# ============================================================================
+
+class DomainRateLimiter:
+    """
+    Enforces politeness delays between requests to the same domain.
+    This prevents overwhelming servers and getting blocked.
+    """
+    
+    def __init__(self, delay=DEFAULT_POLITENESS_DELAY):
+        """
+        Initialize the rate limiter.
+        
+        Args:
+            delay: Minimum seconds between requests to the same domain
+        """
+        self.delay = delay
+        self.last_request_time = defaultdict(float)
+        self._lock = asyncio.Lock() if ASYNC_AVAILABLE else threading.Lock()
+    
+    def get_domain(self, url):
+        """Extract domain from URL."""
+        return urlparse(url).netloc
+    
+    async def wait_async(self, url):
+        """Async wait for politeness delay if needed."""
+        if not ASYNC_AVAILABLE:
+            return
+            
+        domain = self.get_domain(url)
+        async with self._lock:
+            now = time.time()
+            elapsed = now - self.last_request_time[domain]
+            if elapsed < self.delay:
+                wait_time = self.delay - elapsed
+                await asyncio.sleep(wait_time)
+            self.last_request_time[domain] = time.time()
+    
+    def wait_sync(self, url):
+        """Sync wait for politeness delay if needed."""
+        domain = self.get_domain(url)
+        with self._lock:
+            now = time.time()
+            elapsed = now - self.last_request_time[domain]
+            if elapsed < self.delay:
+                wait_time = self.delay - elapsed
+                time.sleep(wait_time)
+            self.last_request_time[domain] = time.time()
+
+
+# ============================================================================
+# URL FILTERING
+# ============================================================================
+
+def should_skip_url(url):
+    """
+    Check if a URL should be skipped based on file extension.
+    
+    Args:
+        url: The URL to check
+    
+    Returns:
+        True if the URL should be skipped, False otherwise
+    """
+    parsed = urlparse(url)
+    path = parsed.path.lower()
+    
+    for ext in SKIP_EXTENSIONS:
+        if path.endswith(ext):
+            return True
+    return False
+
+
+# ============================================================================
+# ASYNC PAGE FETCHING
+# ============================================================================
+
+async def fetch_page_async(session, url, rate_limiter, retries=MAX_RETRIES):
+    """
+    Async fetch a web page's HTML content with retry logic.
+    
+    Args:
+        session: aiohttp ClientSession
+        url: The URL to fetch
+        rate_limiter: DomainRateLimiter instance
+        retries: Number of retry attempts remaining
+    
+    Returns:
+        Tuple of (html_content, error_message, response_time)
+    """
+    if not ASYNC_AVAILABLE:
+        html, error = fetch_page(url)
+        return html, error, 0.0
+    
+    # Wait for politeness delay
+    await rate_limiter.wait_async(url)
+    
+    headers = {"User-Agent": USER_AGENT}
+    start_time = time.time()
+    
+    for attempt in range(retries):
+        try:
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)) as response:
+                response_time = time.time() - start_time
+                
+                # Check for HTTP errors
+                if response.status >= 400:
+                    return None, f"HTTP error: {response.status}", response_time
+                
+                # Only process HTML content
+                content_type = response.headers.get("Content-Type", "")
+                if "text/html" not in content_type.lower():
+                    return None, f"Not HTML (Content-Type: {content_type})", response_time
+                
+                html = await response.text()
+                return html, None, response_time
+                
+        except asyncio.TimeoutError:
+            if attempt < retries - 1:
+                wait_time = RETRY_BACKOFF ** attempt
+                logger.debug(f"Timeout fetching {url}, retrying in {wait_time:.1f}s...")
+                await asyncio.sleep(wait_time)
+            else:
+                return None, "Request timed out", time.time() - start_time
+        except aiohttp.ClientError as e:
+            if attempt < retries - 1:
+                wait_time = RETRY_BACKOFF ** attempt
+                logger.debug(f"Error fetching {url}: {e}, retrying in {wait_time:.1f}s...")
+                await asyncio.sleep(wait_time)
+            else:
+                return None, f"Connection error: {str(e)}", time.time() - start_time
+        except Exception as e:
+            return None, f"Request failed: {str(e)}", time.time() - start_time
+    
+    return None, "Max retries exceeded", time.time() - start_time
+
+
+# ============================================================================
+# PAGE FETCHING AND PARSING (SYNC)
 # ============================================================================
 
 def fetch_page(url):
@@ -515,6 +687,206 @@ def crawl(start_url, search_query, max_urls=MAX_URLS_TO_VISIT, max_depth=None,
     return visited_urls_data, matching_urls, crawl_metadata
 
 
+# ============================================================================
+# ASYNC CRAWLER LOGIC
+# ============================================================================
+
+async def crawl_async(start_url, search_query, max_urls=MAX_URLS_TO_VISIT, max_depth=None,
+                      same_domain_only=False, concurrency=DEFAULT_CONCURRENCY,
+                      politeness_delay=DEFAULT_POLITENESS_DELAY, stop_event=None):
+    """
+    High-performance async crawling function using BFS traversal with concurrent fetching.
+    
+    Args:
+        start_url: The seed URL to start crawling from
+        search_query: The term to search for on each page
+        max_urls: Maximum number of unique URLs to visit
+        max_depth: Maximum depth to crawl (None for unlimited)
+        same_domain_only: If True, only crawl URLs from the same domain
+        concurrency: Number of concurrent requests
+        politeness_delay: Seconds between requests to same domain
+        stop_event: Optional threading.Event to request a stop
+    
+    Returns:
+        Tuple of (visited_urls_data, matching_urls, crawl_metadata)
+    """
+    if not ASYNC_AVAILABLE:
+        logger.warning("Async mode not available, falling back to sync mode")
+        return crawl(start_url, search_query, max_urls, max_depth, same_domain_only, stop_event)
+    
+    logger.info("\n" + "=" * 60)
+    logger.info("STARTING ASYNC WEB CRAWLER")
+    logger.info("=" * 60)
+    logger.info(f"Start URL: {start_url}")
+    logger.info(f"Search Query: '{search_query}'")
+    logger.info(f"Target: {max_urls} unique URLs")
+    logger.info(f"Concurrency: {concurrency} workers")
+    logger.info(f"Politeness Delay: {politeness_delay}s per domain")
+    if max_depth is not None:
+        logger.info(f"Max Depth: {max_depth}")
+    else:
+        logger.info(f"Max Depth: Unlimited")
+    logger.info(f"Same Domain Only: {same_domain_only}")
+    logger.info("=" * 60 + "\n")
+    
+    # Record start time
+    start_time = time.time()
+    
+    # Initialize data structures
+    frontier = URLFrontier(start_url, max_depth=max_depth, same_domain_only=same_domain_only)
+    robots_cache = {}  # Cache robots.txt parsers per domain
+    rate_limiter = DomainRateLimiter(delay=politeness_delay)
+    visited_urls_data = []
+    matching_urls = []
+    urls_in_progress = set()
+    results_lock = asyncio.Lock()
+    
+    # Semaphore for concurrency control
+    semaphore = asyncio.Semaphore(concurrency)
+    
+    async def process_url(session, url, depth):
+        """Process a single URL asynchronously."""
+        nonlocal visited_urls_data, matching_urls
+        
+        async with semaphore:
+            if stop_event and stop_event.is_set():
+                return
+            
+            # Check if we've already hit the limit
+            async with results_lock:
+                if len(visited_urls_data) >= max_urls:
+                    return
+                url_number = len(visited_urls_data) + 1
+            
+            logger.info(f"\n[{url_number}/{max_urls}] Depth {depth}: {url}")
+            
+            # Check robots.txt compliance (sync operation, but fast due to caching)
+            if not can_crawl(url, robots_cache):
+                logger.info("  [Skipped] Blocked by robots.txt")
+                return
+            
+            # Skip non-HTML file extensions
+            if should_skip_url(url):
+                logger.info("  [Skipped] Non-HTML file extension")
+                return
+            
+            # Fetch the page
+            html, error, response_time = await fetch_page_async(session, url, rate_limiter)
+            
+            # Create URL data record
+            url_data = {
+                'url': url,
+                'depth': depth,
+                'timestamp': datetime.now().isoformat(),
+                'response_time': response_time,
+                'status': 'visited',
+                'error': None,
+                'matched': False
+            }
+            
+            if error:
+                logger.error(f"  [Error] {error}")
+                url_data['status'] = 'error'
+                url_data['error'] = error
+                async with results_lock:
+                    visited_urls_data.append(url_data)
+                return
+            
+            # Search for the query
+            if search_page(html, search_query):
+                url_data['matched'] = True
+                logger.info(f"  [Match!] Query '{search_query}' found on this page")
+                async with results_lock:
+                    matching_urls.append(url)
+            
+            # Add to visited list
+            async with results_lock:
+                visited_urls_data.append(url_data)
+            
+            # Extract links from the page
+            links = extract_links(html, url)
+            
+            # Filter out non-HTML links
+            links = [link for link in links if not should_skip_url(link)]
+            
+            logger.info(f"  [Links] Found {len(links)} valid links on this page")
+            
+            # Display discovered links (first 5 for brevity)
+            if links:
+                display_count = min(5, len(links))
+                for link in links[:display_count]:
+                    logger.info(f"    → {link}")
+                if len(links) > display_count:
+                    logger.info(f"    ... and {len(links) - display_count} more")
+            
+            # Add new links to the frontier
+            frontier.add_urls(links, depth)
+    
+    # Create aiohttp session with connection pooling
+    connector = aiohttp.TCPConnector(limit=concurrency * 2, limit_per_host=2)
+    timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
+    
+    async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+        while len(visited_urls_data) < max_urls and not frontier.is_empty():
+            if stop_event and stop_event.is_set():
+                logger.info("  [Stopped] Crawl cancelled by user.")
+                break
+            
+            # Get batch of URLs to process concurrently
+            batch = []
+            while len(batch) < concurrency and not frontier.is_empty():
+                url, depth = frontier.get_next()
+                if url and url not in urls_in_progress:
+                    urls_in_progress.add(url)
+                    batch.append((url, depth))
+            
+            if not batch:
+                break
+            
+            # Process batch concurrently
+            tasks = [process_url(session, url, depth) for url, depth in batch]
+            await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Remove from in-progress set
+            for url, _ in batch:
+                urls_in_progress.discard(url)
+    
+    # Calculate total time
+    total_time = time.time() - start_time
+    
+    # Create metadata
+    crawl_metadata = {
+        'start_url': start_url,
+        'search_query': search_query,
+        'max_urls': max_urls,
+        'max_depth': max_depth,
+        'same_domain_only': same_domain_only,
+        'concurrency': concurrency,
+        'politeness_delay': politeness_delay,
+        'urls_visited': len(visited_urls_data),
+        'urls_matched': len(matching_urls),
+        'total_time': total_time,
+        'timestamp': datetime.now().isoformat(),
+        'mode': 'async'
+    }
+    
+    return visited_urls_data, matching_urls, crawl_metadata
+
+
+def run_async_crawl(start_url, search_query, max_urls=MAX_URLS_TO_VISIT, max_depth=None,
+                    same_domain_only=False, concurrency=DEFAULT_CONCURRENCY,
+                    politeness_delay=DEFAULT_POLITENESS_DELAY, stop_event=None):
+    """
+    Wrapper to run async crawl from sync code.
+    
+    This is useful for running from the GUI or other sync contexts.
+    """
+    return asyncio.run(crawl_async(
+        start_url, search_query, max_urls, max_depth,
+        same_domain_only, concurrency, politeness_delay, stop_event
+    ))
+
+
 def print_results(visited_urls_data, matching_urls, search_query, max_urls=MAX_URLS_TO_VISIT):
     """
     Print the final crawling results.
@@ -700,21 +1072,27 @@ def parse_arguments():
         argparse.Namespace with parsed arguments
     """
     parser = argparse.ArgumentParser(
-        description='Web Crawler - BFS-based crawler with search functionality',
+        description='Web Crawler - High-performance async crawler with search functionality',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Interactive mode
+  # Interactive mode (async by default)
   python crawler.py
   
   # CLI mode with all options
-  python crawler.py --url https://example.com --query "privacy" --max-urls 10 --max-depth 2
+  python crawler.py --url https://example.com --query "privacy" --max-urls 50 --max-depth 3
+  
+  # Fast concurrent crawling
+  python crawler.py --url https://example.com --query "contact" --concurrency 10 --delay 0.5
   
   # GUI mode
   python crawler.py --gui
   
+  # Sync mode (original behavior)
+  python crawler.py --url https://example.com --query "privacy" --sync
+  
   # Same-domain only mode with export
-  python crawler.py --url https://example.com --query "contact" --same-domain-only --export-json results.json
+  python crawler.py --url https://example.com --query "contact" --same-domain-only --export-json
         """
     )
     
@@ -726,9 +1104,19 @@ Examples:
                         help='Maximum crawl depth (default: unlimited)')
     parser.add_argument('--same-domain-only', '-s', action='store_true',
                         help='Only crawl URLs from the same domain as the seed URL')
-    parser.add_argument('--export-json', type=str, metavar='FILE',
+    
+    # Async options
+    parser.add_argument('--sync', action='store_true',
+                        help='Use synchronous crawling instead of async (slower but simpler)')
+    parser.add_argument('--concurrency', '-c', type=int, default=DEFAULT_CONCURRENCY,
+                        help=f'Number of concurrent requests (default: {DEFAULT_CONCURRENCY})')
+    parser.add_argument('--delay', type=float, default=DEFAULT_POLITENESS_DELAY,
+                        help=f'Politeness delay in seconds between requests to same domain (default: {DEFAULT_POLITENESS_DELAY})')
+    
+    # Export options
+    parser.add_argument('--export-json', type=str, nargs='?', const='', metavar='FILE',
                         help='Export results to JSON file (auto-generated filename if not specified)')
-    parser.add_argument('--export-csv', type=str, metavar='FILE',
+    parser.add_argument('--export-csv', type=str, nargs='?', const='', metavar='FILE',
                         help='Export results to CSV file (auto-generated filename if not specified)')
     parser.add_argument('--log-level', type=str, choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
                         default='INFO', help='Set logging level (default: INFO)')
@@ -765,26 +1153,37 @@ def main():
         else:
             start_url, search_query = get_user_input()
         
-        # Run the crawler
-        visited_urls_data, matching_urls, crawl_metadata = crawl(
-            start_url, 
-            search_query,
-            max_urls=args.max_urls,
-            max_depth=args.max_depth,
-            same_domain_only=args.same_domain_only
-        )
+        # Run the crawler (async by default if available)
+        if args.sync or not ASYNC_AVAILABLE:
+            if not args.sync:
+                logger.info("Async mode not available, using sync mode")
+            visited_urls_data, matching_urls, crawl_metadata = crawl(
+                start_url, 
+                search_query,
+                max_urls=args.max_urls,
+                max_depth=args.max_depth,
+                same_domain_only=args.same_domain_only
+            )
+        else:
+            visited_urls_data, matching_urls, crawl_metadata = run_async_crawl(
+                start_url, 
+                search_query,
+                max_urls=args.max_urls,
+                max_depth=args.max_depth,
+                same_domain_only=args.same_domain_only,
+                concurrency=args.concurrency,
+                politeness_delay=args.delay
+            )
         
         # Print results
         print_results(visited_urls_data, matching_urls, search_query, max_urls=args.max_urls)
         
         # Export results if requested
         if args.export_json is not None:
-            # Use empty string to trigger auto-generated filename
             filename = args.export_json if args.export_json else None
             export_to_json(visited_urls_data, matching_urls, crawl_metadata, filename)
         
         if args.export_csv is not None:
-            # Use empty string to trigger auto-generated filename
             filename = args.export_csv if args.export_csv else None
             export_to_csv(visited_urls_data, matching_urls, crawl_metadata, filename)
         
@@ -851,8 +1250,8 @@ def run_gui():
     gui_logger.addHandler(file_handler)
 
     root = tk.Tk()
-    root.title("Web Crawler - Enhanced Edition")
-    root.geometry("900x700")
+    root.title("Web Crawler - Async Edition" if ASYNC_AVAILABLE else "Web Crawler")
+    root.geometry("900x750")
 
     url_var = tk.StringVar()
     query_var = tk.StringVar()
@@ -861,6 +1260,12 @@ def run_gui():
     same_domain_var = tk.BooleanVar(value=False)
     export_format_var = tk.StringVar(value="json")
     log_level_var = tk.StringVar(value="INFO")
+    
+    # Async options
+    use_async_var = tk.BooleanVar(value=ASYNC_AVAILABLE)
+    concurrency_var = tk.StringVar(value=str(DEFAULT_CONCURRENCY))
+    delay_var = tk.StringVar(value=str(DEFAULT_POLITENESS_DELAY))
+    
     stop_event_holder = {"event": None}
 
     # Row 0: Starting URL
@@ -882,33 +1287,52 @@ def run_gui():
     max_depth_entry = tk.Entry(root, textvariable=max_depth_var, width=10)
     max_depth_entry.grid(row=2, column=2, sticky="w", padx=8, pady=4)
 
-    # Row 3: Same Domain Only checkbox
+    # Row 3: Async options
+    async_frame = tk.LabelFrame(root, text="Performance Options", padx=8, pady=4)
+    async_frame.grid(row=3, column=0, columnspan=3, sticky="ew", padx=8, pady=4)
+    
+    async_check = tk.Checkbutton(
+        async_frame, text="Async mode (faster)", 
+        variable=use_async_var,
+        state="normal" if ASYNC_AVAILABLE else "disabled"
+    )
+    async_check.pack(side=tk.LEFT, padx=5)
+    
+    tk.Label(async_frame, text="Concurrency:").pack(side=tk.LEFT, padx=(20, 5))
+    concurrency_entry = tk.Entry(async_frame, textvariable=concurrency_var, width=5)
+    concurrency_entry.pack(side=tk.LEFT)
+    
+    tk.Label(async_frame, text="Delay (sec):").pack(side=tk.LEFT, padx=(20, 5))
+    delay_entry = tk.Entry(async_frame, textvariable=delay_var, width=5)
+    delay_entry.pack(side=tk.LEFT)
+    
+    # Row 4: Same Domain Only checkbox
     same_domain_check = tk.Checkbutton(
         root, text="Crawl same domain only", 
         variable=same_domain_var
     )
-    same_domain_check.grid(row=3, column=0, columnspan=2, sticky="w", padx=8, pady=4)
+    same_domain_check.grid(row=4, column=0, columnspan=2, sticky="w", padx=8, pady=4)
 
-    # Row 4: Export format and Log level
-    tk.Label(root, text="Export Format:").grid(row=4, column=0, sticky="w", padx=8, pady=4)
+    # Row 5: Export format and Log level
+    tk.Label(root, text="Export Format:").grid(row=5, column=0, sticky="w", padx=8, pady=4)
     export_frame = tk.Frame(root)
-    export_frame.grid(row=4, column=1, sticky="w", padx=8, pady=4)
+    export_frame.grid(row=5, column=1, sticky="w", padx=8, pady=4)
     tk.Radiobutton(export_frame, text="JSON", variable=export_format_var, value="json").pack(side=tk.LEFT)
     tk.Radiobutton(export_frame, text="CSV", variable=export_format_var, value="csv").pack(side=tk.LEFT)
     tk.Radiobutton(export_frame, text="Both", variable=export_format_var, value="both").pack(side=tk.LEFT)
     tk.Radiobutton(export_frame, text="None", variable=export_format_var, value="none").pack(side=tk.LEFT)
     
-    tk.Label(root, text="Log Level:").grid(row=4, column=1, sticky="e", padx=8, pady=4)
+    tk.Label(root, text="Log Level:").grid(row=5, column=1, sticky="e", padx=8, pady=4)
     log_level_menu = tk.OptionMenu(root, log_level_var, "DEBUG", "INFO", "WARNING", "ERROR")
-    log_level_menu.grid(row=4, column=2, sticky="w", padx=8, pady=4)
+    log_level_menu.grid(row=5, column=2, sticky="w", padx=8, pady=4)
 
-    # Row 5: Log box
-    log_box = scrolledtext.ScrolledText(root, width=100, height=30, state="normal")
-    log_box.grid(row=6, column=0, columnspan=3, padx=8, pady=8, sticky="nsew")
+    # Row 7: Log box (moved down to make room for async options)
+    log_box = scrolledtext.ScrolledText(root, width=100, height=28, state="normal")
+    log_box.grid(row=7, column=0, columnspan=3, padx=8, pady=8, sticky="nsew")
 
     # Grid stretch
     root.grid_columnconfigure(1, weight=1)
-    root.grid_rowconfigure(6, weight=1)
+    root.grid_rowconfigure(7, weight=1)
 
     def start_crawl():
         start_url = url_var.get().strip()
@@ -944,6 +1368,26 @@ def run_gui():
                 messagebox.showwarning("Invalid Input", "Max depth must be a number or empty.")
                 return
         
+        # Parse async options
+        use_async = use_async_var.get() and ASYNC_AVAILABLE
+        try:
+            concurrency_val = int(concurrency_var.get())
+            if concurrency_val < 1 or concurrency_val > 20:
+                messagebox.showwarning("Invalid Input", "Concurrency must be between 1 and 20.")
+                return
+        except ValueError:
+            messagebox.showwarning("Invalid Input", "Concurrency must be a number.")
+            return
+        
+        try:
+            delay_val = float(delay_var.get())
+            if delay_val < 0:
+                messagebox.showwarning("Invalid Input", "Delay must be non-negative.")
+                return
+        except ValueError:
+            messagebox.showwarning("Invalid Input", "Delay must be a number.")
+            return
+        
         same_domain_val = same_domain_var.get()
         export_format = export_format_var.get()
         log_level = log_level_var.get()
@@ -964,14 +1408,27 @@ def run_gui():
             redirector = TextRedirector(log_box, gui_logger)
             try:
                 with redirect_stdout(redirector):
-                    visited_urls_data, matching_urls, crawl_metadata = crawl(
-                        start_url,
-                        search_query,
-                        max_urls=max_urls_val,
-                        max_depth=max_depth_val,
-                        same_domain_only=same_domain_val,
-                        stop_event=stop_event_holder["event"],
-                    )
+                    if use_async:
+                        # Use async crawl in a new event loop
+                        visited_urls_data, matching_urls, crawl_metadata = run_async_crawl(
+                            start_url,
+                            search_query,
+                            max_urls=max_urls_val,
+                            max_depth=max_depth_val,
+                            same_domain_only=same_domain_val,
+                            concurrency=concurrency_val,
+                            politeness_delay=delay_val,
+                            stop_event=stop_event_holder["event"],
+                        )
+                    else:
+                        visited_urls_data, matching_urls, crawl_metadata = crawl(
+                            start_url,
+                            search_query,
+                            max_urls=max_urls_val,
+                            max_depth=max_depth_val,
+                            same_domain_only=same_domain_val,
+                            stop_event=stop_event_holder["event"],
+                        )
                     print_results(visited_urls_data, matching_urls, search_query, max_urls=max_urls_val)
                     
                     # Export results
@@ -996,15 +1453,22 @@ def run_gui():
             event.set()
         stop_button.config(state="disabled")
 
-    # Row 5: Buttons
+    # Row 6: Buttons
     button_frame = tk.Frame(root)
-    button_frame.grid(row=5, column=0, columnspan=3, pady=6, padx=8, sticky="ew")
+    button_frame.grid(row=6, column=0, columnspan=3, pady=6, padx=8, sticky="ew")
     
     start_button = tk.Button(button_frame, text="Run Crawl", command=start_crawl, width=15)
     start_button.pack(side=tk.LEFT, padx=5)
 
     stop_button = tk.Button(button_frame, text="Stop", command=stop_crawl, state="disabled", width=15)
     stop_button.pack(side=tk.LEFT, padx=5)
+    
+    # Add async status label
+    if ASYNC_AVAILABLE:
+        status_label = tk.Label(button_frame, text="✓ Async mode available", fg="green")
+    else:
+        status_label = tk.Label(button_frame, text="⚠ Async not available (install aiohttp)", fg="orange")
+    status_label.pack(side=tk.RIGHT, padx=5)
 
     url_entry.focus_set()
     root.mainloop()
