@@ -25,7 +25,7 @@ import asyncio
 import csv
 import json
 import logging
-import mechanicalsoup
+import pickle
 import random
 import sys
 import threading
@@ -33,9 +33,11 @@ import time
 from contextlib import redirect_stdout
 from collections import deque, defaultdict
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import urlparse, urljoin
 from urllib.robotparser import RobotFileParser
 
+import mechanicalsoup
 import requests
 from bs4 import BeautifulSoup
 
@@ -291,6 +293,141 @@ class URLFrontier:
     def get_depth(self, url):
         """Get the depth of a URL."""
         return self.url_depths.get(url, 0)
+
+
+# ============================================================================
+# FORM HANDLER (AUTHENTICATION & FORM DETECTION)
+# ============================================================================
+
+class FormHandler:
+    """
+    Handles form detection, filling, and submission for authentication and search.
+    """
+    
+    def __init__(self, user_agent=None):
+        """Initialize the form handler with a stateful browser."""
+        self.browser = mechanicalsoup.StatefulBrowser(
+            user_agent=user_agent or USER_AGENT
+        )
+        self.session_file = Path('crawler_session.pkl')
+        self.authenticated = False
+        
+    def save_session(self):
+        """Save browser session cookies to disk."""
+        try:
+            with open(self.session_file, 'wb') as f:
+                pickle.dump(self.browser.session.cookies, f)
+            logger.info(f"Session saved to {self.session_file}")
+        except Exception as e:
+            logger.warning(f"Failed to save session: {e}")
+            
+    def load_session(self):
+        """Load browser session cookies from disk."""
+        if self.session_file.exists():
+            try:
+                with open(self.session_file, 'rb') as f:
+                    self.browser.session.cookies.update(pickle.load(f))
+                logger.info(f"Session loaded from {self.session_file}")
+                return True
+            except Exception as e:
+                logger.warning(f"Failed to load session: {e}")
+        return False
+    
+    def login(self, url, username, password, username_field='username', password_field='password'):
+        """
+        Attempt to login to a website.
+        
+        Args:
+            url: Login page URL
+            username: Username/email
+            password: Password
+            username_field: Name of username input field
+            password_field: Name of password input field
+        
+        Returns:
+            bool: True if login appeared successful
+        """
+        try:
+            logger.info(f"Opening login page: {url}")
+            self.browser.open(url)
+            
+            # Try to select the first form
+            self.browser.select_form()
+            
+            # Fill in credentials
+            self.browser[username_field] = username
+            self.browser[password_field] = password
+            
+            # Submit the form
+            response = self.browser.submit_selected()
+            
+            # Simple success check - look for common failure indicators
+            page_text = response.text.lower()
+            failure_indicators = ['login failed', 'invalid', 'incorrect password', 
+                                'authentication failed', 'wrong password', 'error']
+            
+            if any(indicator in page_text for indicator in failure_indicators):
+                logger.warning("Login may have failed (found failure indicators)")
+                return False
+            
+            # Check if we're still on the login page (usually means failure)
+            if response.url == url or 'login' in response.url.lower():
+                logger.warning("Still on login page after submission")
+                return False
+                
+            self.authenticated = True
+            self.save_session()
+            logger.info("✓ Login successful")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Login failed: {e}")
+            return False
+    
+    def find_forms(self, soup):
+        """
+        Find all forms on a page and categorize them.
+        
+        Args:
+            soup: BeautifulSoup object of the page
+        
+        Returns:
+            dict: Categorized forms (login, search, contact, other)
+        """
+        forms = soup.find_all('form')
+        categorized = {
+            'login': [],
+            'search': [],
+            'contact': [],
+            'other': []
+        }
+        
+        for form in forms:
+            form_text = str(form).lower()
+            inputs = form.find_all(['input', 'textarea'])
+            input_names = [inp.get('name', '').lower() for inp in inputs]
+            input_types = [inp.get('type', '').lower() for inp in inputs]
+            
+            # Categorize form based on inputs
+            if 'password' in input_types:
+                categorized['login'].append(form)
+            elif any(name in ['q', 'search', 'query', 's'] for name in input_names):
+                categorized['search'].append(form)
+            elif any(keyword in form_text for keyword in ['contact', 'message', 'feedback']):
+                categorized['contact'].append(form)
+            else:
+                categorized['other'].append(form)
+                
+        return categorized
+    
+    def get_authenticated_session(self):
+        """
+        Get the authenticated session for making requests.
+        
+        Returns:
+            requests.Session: The session with cookies
+        """
+        return self.browser.session
 
 
 # ============================================================================
@@ -568,7 +705,7 @@ def search_page(html, query):
 # ============================================================================
 
 def crawl(start_url, search_query, max_urls=MAX_URLS_TO_VISIT, max_depth=None,
-          same_domain_only=False, stop_event=None, progress_callback=None):
+          same_domain_only=False, stop_event=None, progress_callback=None, form_handler=None):
     """
     Main crawling function using BFS traversal.
     
@@ -580,6 +717,7 @@ def crawl(start_url, search_query, max_urls=MAX_URLS_TO_VISIT, max_depth=None,
         same_domain_only: If True, only crawl URLs from the same domain
         stop_event: Optional threading.Event to request a stop
         progress_callback: Optional callback with (visited, max_urls)
+        form_handler: Optional FormHandler for authenticated requests
     
     Returns:
         Tuple of (visited_urls_data, matching_urls, crawl_metadata)
@@ -708,7 +846,7 @@ def crawl(start_url, search_query, max_urls=MAX_URLS_TO_VISIT, max_depth=None,
 
 async def crawl_async(start_url, search_query, max_urls=MAX_URLS_TO_VISIT, max_depth=None,
                       same_domain_only=False, concurrency=DEFAULT_CONCURRENCY,
-                      politeness_delay=DEFAULT_POLITENESS_DELAY, stop_event=None):
+                      politeness_delay=DEFAULT_POLITENESS_DELAY, stop_event=None, form_handler=None):
     """
     High-performance async crawling function using BFS traversal with concurrent fetching.
     
@@ -720,6 +858,8 @@ async def crawl_async(start_url, search_query, max_urls=MAX_URLS_TO_VISIT, max_d
         same_domain_only: If True, only crawl URLs from the same domain
         concurrency: Number of concurrent requests
         politeness_delay: Seconds between requests to same domain
+        stop_event: Optional threading.Event to request a stop
+        form_handler: Optional FormHandler for authenticated requests
         stop_event: Optional threading.Event to request a stop
     
     Returns:
@@ -890,7 +1030,7 @@ async def crawl_async(start_url, search_query, max_urls=MAX_URLS_TO_VISIT, max_d
 
 def run_async_crawl(start_url, search_query, max_urls=MAX_URLS_TO_VISIT, max_depth=None,
                     same_domain_only=False, concurrency=DEFAULT_CONCURRENCY,
-                    politeness_delay=DEFAULT_POLITENESS_DELAY, stop_event=None):
+                    politeness_delay=DEFAULT_POLITENESS_DELAY, stop_event=None, form_handler=None):
     """
     Wrapper to run async crawl from sync code.
     
@@ -898,7 +1038,7 @@ def run_async_crawl(start_url, search_query, max_urls=MAX_URLS_TO_VISIT, max_dep
     """
     return asyncio.run(crawl_async(
         start_url, search_query, max_urls, max_depth,
-        same_domain_only, concurrency, politeness_delay, stop_event
+        same_domain_only, concurrency, politeness_delay, stop_event, form_handler
     ))
 
 
@@ -1137,6 +1277,16 @@ Examples:
                         default='INFO', help='Set logging level (default: INFO)')
     parser.add_argument('--gui', action='store_true', help='Run in GUI mode')
     
+    # Authentication options
+    parser.add_argument('--login', action='store_true', help='Enable authentication before crawling')
+    parser.add_argument('--login-url', type=str, help='Login page URL')
+    parser.add_argument('--username', type=str, help='Login username or email')
+    parser.add_argument('--password', type=str, help='Login password')
+    parser.add_argument('--username-field', type=str, default='username', 
+                        help='Username input field name (default: username)')
+    parser.add_argument('--password-field', type=str, default='password',
+                        help='Password input field name (default: password)')
+    
     return parser.parse_args()
 
 
@@ -1168,6 +1318,38 @@ def main():
         else:
             start_url, search_query = get_user_input()
         
+        # Handle authentication if requested
+        form_handler = None
+        if args.login:
+            if not args.login_url or not args.username or not args.password:
+                logger.error("--login requires --login-url, --username, and --password")
+                return
+            
+            logger.info("\n" + "=" * 60)
+            logger.info("AUTHENTICATION")
+            logger.info("=" * 60)
+            
+            form_handler = FormHandler()
+            
+            # Try to load existing session first
+            if form_handler.load_session():
+                logger.info("Loaded existing session from file")
+            else:
+                # Perform login
+                success = form_handler.login(
+                    args.login_url,
+                    args.username,
+                    args.password,
+                    username_field=args.username_field,
+                    password_field=args.password_field
+                )
+                
+                if not success:
+                    logger.error("Authentication failed. Continuing without authentication.")
+                    form_handler = None
+            
+            logger.info("=" * 60 + "\n")
+        
         # Run the crawler (async by default if available)
         if args.sync or not ASYNC_AVAILABLE:
             if not args.sync:
@@ -1177,7 +1359,8 @@ def main():
                 search_query,
                 max_urls=args.max_urls,
                 max_depth=args.max_depth,
-                same_domain_only=args.same_domain_only
+                same_domain_only=args.same_domain_only,
+                form_handler=form_handler
             )
         else:
             visited_urls_data, matching_urls, crawl_metadata = run_async_crawl(
@@ -1187,7 +1370,8 @@ def main():
                 max_depth=args.max_depth,
                 same_domain_only=args.same_domain_only,
                 concurrency=args.concurrency,
-                politeness_delay=args.delay
+                politeness_delay=args.delay,
+                form_handler=form_handler
             )
         
         # Print results
@@ -1373,6 +1557,39 @@ def run_gui():
     )
     same_domain_check.grid(row=4, column=0, columnspan=2, sticky="w", padx=8, pady=4)
 
+    # Row 4.5: Authentication Panel
+    auth_frame = tk.LabelFrame(root, text="🔐 Authentication (Optional)", padx=8, pady=8)
+    auth_frame.grid(row=4, column=2, rowspan=2, sticky="nsew", padx=8, pady=4)
+    
+    enable_auth_var = tk.BooleanVar(value=False)
+    login_url_var = tk.StringVar()
+    username_var = tk.StringVar()
+    password_var = tk.StringVar()
+    
+    def toggle_auth_fields():
+        state = 'normal' if enable_auth_var.get() else 'disabled'
+        login_url_entry.config(state=state)
+        username_entry.config(state=state)
+        password_entry.config(state=state)
+    
+    tk.Checkbutton(auth_frame, text="Enable Login", 
+                  variable=enable_auth_var,
+                  command=toggle_auth_fields).grid(row=0, column=0, columnspan=2, sticky='w', pady=2)
+    
+    tk.Label(auth_frame, text="Login URL:", font=('TkDefaultFont', 8)).grid(row=1, column=0, sticky='w', pady=2)
+    login_url_entry = tk.Entry(auth_frame, textvariable=login_url_var, width=25, state='disabled')
+    login_url_entry.grid(row=1, column=1, sticky='ew', pady=2, padx=(5, 0))
+    
+    tk.Label(auth_frame, text="Username:", font=('TkDefaultFont', 8)).grid(row=2, column=0, sticky='w', pady=2)
+    username_entry = tk.Entry(auth_frame, textvariable=username_var, width=25, state='disabled')
+    username_entry.grid(row=2, column=1, sticky='ew', pady=2, padx=(5, 0))
+    
+    tk.Label(auth_frame, text="Password:", font=('TkDefaultFont', 8)).grid(row=3, column=0, sticky='w', pady=2)
+    password_entry = tk.Entry(auth_frame, textvariable=password_var, width=25, show="*", state='disabled')
+    password_entry.grid(row=3, column=1, sticky='ew', pady=2, padx=(5, 0))
+    
+    auth_frame.columnconfigure(1, weight=1)
+
     # Row 5: Export format and Log level
     tk.Label(root, text="Export Format:").grid(row=5, column=0, sticky="w", padx=8, pady=4)
     export_frame = tk.Frame(root)
@@ -1451,6 +1668,37 @@ def run_gui():
         same_domain_val = same_domain_var.get()
         export_format = export_format_var.get()
         log_level = log_level_var.get()
+        
+        # Handle authentication
+        form_handler = None
+        enable_auth = enable_auth_var.get()
+        if enable_auth:
+            login_url = login_url_var.get().strip()
+            username = username_var.get().strip()
+            password = password_var.get().strip()
+            
+            if not login_url or not username or not password:
+                messagebox.showwarning("Authentication Error", 
+                                     "Please provide login URL, username, and password.")
+                return
+            
+            form_handler = FormHandler()
+            # Try to load existing session
+            if not form_handler.load_session():
+                # Perform login in the background
+                log_box.configure(state="normal")
+                log_box.insert("end", "Attempting login...\n")
+                log_box.configure(state="disabled")
+                
+                success = form_handler.login(login_url, username, password)
+                if success:
+                    log_box.configure(state="normal")
+                    log_box.insert("end", "✓ Login successful\n\n")
+                    log_box.configure(state="disabled")
+                else:
+                    messagebox.showwarning("Login Failed", 
+                                         "Authentication failed. Check credentials and try again.")
+                    return
 
         # Clear previous logs
         log_box.configure(state="normal")
@@ -1484,6 +1732,7 @@ def run_gui():
                             concurrency=concurrency_val,
                             politeness_delay=delay_val,
                             stop_event=stop_event_holder["event"],
+                            form_handler=form_handler
                         )
                     else:
                         visited_urls_data, matching_urls, crawl_metadata = crawl(
@@ -1493,6 +1742,7 @@ def run_gui():
                             max_depth=max_depth_val,
                             same_domain_only=same_domain_val,
                             stop_event=stop_event_holder["event"],
+                            form_handler=form_handler
                         )
                     print_results(visited_urls_data, matching_urls, search_query, max_urls=max_urls_val)
                     formatted = format_results_for_gui(

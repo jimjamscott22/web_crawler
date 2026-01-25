@@ -1,10 +1,13 @@
 # Web Crawler
 
-A high-performance Python web crawler with async support, GUI and command-line interfaces. Uses Breadth-First Search (BFS) to crawl websites, respects robots.txt, and can search pages for specific content.
+A high-performance Python web crawler with async support, authentication, and dual interfaces. Uses Breadth-First Search (BFS) to crawl websites, respects robots.txt, and can search pages for specific content.
 
 ## Features
 
 - **🚀 Async Crawling**: Concurrent fetching for 5-10x faster performance
+- **🔐 Authentication Support**: Login to websites and crawl authenticated pages
+- **📝 Form Detection**: Automatically detect and categorize forms
+- **🍪 Session Persistence**: Maintain cookies across crawls
 - **⏱️ Politeness Controls**: Per-domain rate limiting to avoid getting blocked
 - **🔄 Retry Logic**: Automatic retries with exponential backoff
 - **🖥️ Dual Interface**: Easy-to-use GUI or command-line interface
@@ -50,6 +53,9 @@ This will install:
 - **requests**: HTTP requests and web page fetching
 - **beautifulsoup4**: HTML parsing and link extraction
 - **aiohttp**: Async HTTP client for high-performance crawling
+- **mechanicalsoup**: Form handling and authentication
+- **beautifulsoup4**: HTML parsing and link extraction
+- **aiohttp**: Async HTTP client for high-performance crawling
 
 ## Usage
 
@@ -65,6 +71,7 @@ The GUI provides:
 
 - Input fields for start URL and search query
 - **Performance Options**: Toggle async mode, set concurrency and delay
+- **Authentication Panel**: Enable login for authenticated crawling
 - Options for max URLs, depth, and domain restrictions
 - Real-time crawl progress display
 - Export buttons for saving results
@@ -81,6 +88,34 @@ You'll be prompted to enter:
 
 1. Starting URL (e.g., `https://example.com`)
 2. Search query (e.g., "contact" or "privacy")
+
+### Authentication Examples
+
+Crawl authenticated pages by providing login credentials:
+
+```bash
+# Basic authentication
+python crawler.py --url https://example.com/dashboard \
+  --query "reports" \
+  --login \
+  --login-url https://example.com/login \
+  --username your_email@example.com \
+  --password your_password
+
+# With custom field names
+python crawler.py --url https://site.com/members \
+  --login \
+  --login-url https://site.com/signin \
+  --username user@example.com \
+  --password pass123 \
+  --username-field "email" \
+  --password-field "pass"
+
+# Sessions are saved - reuse on next run
+python crawler.py --url https://example.com/dashboard --query "data"
+```
+
+**Note:** Sessions are automatically saved to `crawler_session.pkl` and reused in future runs.
 
 ### Advanced Options
 
