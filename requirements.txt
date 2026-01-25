@@ -1,3 +1,7 @@
 requests
 beautifulsoup4
+<<<<<<< HEAD
 aiohttp
+=======
+mechanicalsoup
+>>>>>>> 2c70ca6369b91adfb6c25eb7a9ce0298ecafbc3c
