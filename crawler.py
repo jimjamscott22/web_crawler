@@ -1511,6 +1511,8 @@ def run_gui():
     same_domain_var = tk.BooleanVar(value=False)
     export_format_var = tk.StringVar(value="json")
     log_level_var = tk.StringVar(value="INFO")
+    export_dir_var = tk.StringVar(value="")
+    status_var = tk.StringVar(value="Idle")
     
     # Async options
     use_async_var = tk.BooleanVar(value=ASYNC_AVAILABLE)
@@ -1610,6 +1612,46 @@ def run_gui():
     # Grid stretch
     root.grid_columnconfigure(1, weight=1)
     root.grid_rowconfigure(7, weight=1)
+
+    def update_progress(current, total):
+        if total and total > 0:
+            status_var.set(f"Running... ({current}/{total})")
+        else:
+            status_var.set("Running...")
+
+    def set_inputs_state(enabled):
+        state = "normal" if enabled else "disabled"
+        for widget in (
+            url_entry,
+            query_entry,
+            concurrency_entry,
+            delay_entry,
+            same_domain_check,
+            async_check,
+            login_url_entry,
+            username_entry,
+            password_entry,
+            log_level_menu,
+        ):
+            try:
+                widget.configure(state=state)
+            except Exception:
+                pass
+        if enabled:
+            toggle_auth_fields()
+
+    def set_results_text(text):
+        if text is None:
+            text = ""
+        if not text:
+            return
+        log_box.configure(state="normal")
+        log_box.insert("end", "\n" + "=" * 80 + "\n")
+        log_box.insert("end", "RESULTS\n")
+        log_box.insert("end", "=" * 80 + "\n")
+        log_box.insert("end", text + "\n")
+        log_box.see("end")
+        log_box.configure(state="disabled")
 
     def start_crawl():
         start_url = url_var.get().strip()
@@ -1808,6 +1850,8 @@ def run_gui():
     else:
         status_label = tk.Label(button_frame, text="⚠ Async not available (install aiohttp)", fg="orange")
     status_label.pack(side=tk.RIGHT, padx=5)
+    crawl_status_label = tk.Label(button_frame, textvariable=status_var)
+    crawl_status_label.pack(side=tk.RIGHT, padx=12)
 
     url_entry.focus_set()
     root.mainloop()
@@ -1815,4 +1859,3 @@ def run_gui():
 
 if __name__ == "__main__":
     main()
-
