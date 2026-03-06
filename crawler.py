@@ -50,6 +50,13 @@ except ImportError:
     print("Warning: aiohttp not installed. Using synchronous mode only.")
     print("Install with: pip install aiohttp")
 
+# Try to import playwright for JS-rendered page support
+try:
+    from playwright.async_api import async_playwright
+    PLAYWRIGHT_AVAILABLE = True
+except ImportError:
+    PLAYWRIGHT_AVAILABLE = False
+
 
 # ============================================================================
 # CONFIGURATION
@@ -569,6 +576,45 @@ async def fetch_page_async(session, url, rate_limiter, retries=MAX_RETRIES):
 
 
 # ============================================================================
+# PLAYWRIGHT JS-RENDERED PAGE FETCHING
+# ============================================================================
+
+async def fetch_with_playwright(url, retries=MAX_RETRIES):
+    """
+    Fetch a web page using Playwright's headless Chromium for JS-rendered content.
+
+    Args:
+        url: The URL to fetch
+        retries: Number of retry attempts remaining
+
+    Returns:
+        Tuple of (html_content, error_message, response_time)
+    """
+    start_time = time.time()
+
+    for attempt in range(retries):
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                page = await browser.new_page(user_agent=USER_AGENT)
+                await page.goto(url, wait_until="networkidle",
+                                timeout=REQUEST_TIMEOUT * 1000)
+                html = await page.content()
+                await browser.close()
+                response_time = time.time() - start_time
+                return html, None, response_time
+        except Exception as e:
+            if attempt < retries - 1:
+                wait_time = RETRY_BACKOFF ** attempt
+                logger.debug(f"Playwright error fetching {url}: {e}, retrying in {wait_time:.1f}s...")
+                await asyncio.sleep(wait_time)
+            else:
+                return None, f"Playwright fetch failed: {str(e)}", time.time() - start_time
+
+    return None, "Max retries exceeded", time.time() - start_time
+
+
+# ============================================================================
 # PAGE FETCHING AND PARSING (SYNC)
 # ============================================================================
 
@@ -846,10 +892,11 @@ def crawl(start_url, search_query, max_urls=MAX_URLS_TO_VISIT, max_depth=None,
 
 async def crawl_async(start_url, search_query, max_urls=MAX_URLS_TO_VISIT, max_depth=None,
                       same_domain_only=False, concurrency=DEFAULT_CONCURRENCY,
-                      politeness_delay=DEFAULT_POLITENESS_DELAY, stop_event=None, form_handler=None):
+                      politeness_delay=DEFAULT_POLITENESS_DELAY, stop_event=None,
+                      form_handler=None, use_js=False):
     """
     High-performance async crawling function using BFS traversal with concurrent fetching.
-    
+
     Args:
         start_url: The seed URL to start crawling from
         search_query: The term to search for on each page
@@ -860,8 +907,8 @@ async def crawl_async(start_url, search_query, max_urls=MAX_URLS_TO_VISIT, max_d
         politeness_delay: Seconds between requests to same domain
         stop_event: Optional threading.Event to request a stop
         form_handler: Optional FormHandler for authenticated requests
-        stop_event: Optional threading.Event to request a stop
-    
+        use_js: If True, use Playwright for JS-rendered page fetching
+
     Returns:
         Tuple of (visited_urls_data, matching_urls, crawl_metadata)
     """
@@ -882,11 +929,13 @@ async def crawl_async(start_url, search_query, max_urls=MAX_URLS_TO_VISIT, max_d
     else:
         logger.info(f"Max Depth: Unlimited")
     logger.info(f"Same Domain Only: {same_domain_only}")
+    if use_js:
+        logger.info(f"JS Rendering: Enabled (Playwright)")
     logger.info("=" * 60 + "\n")
-    
+
     # Record start time
     start_time = time.time()
-    
+
     # Initialize data structures
     frontier = URLFrontier(start_url, max_depth=max_depth, same_domain_only=same_domain_only)
     robots_cache = {}  # Cache robots.txt parsers per domain
@@ -895,38 +944,42 @@ async def crawl_async(start_url, search_query, max_urls=MAX_URLS_TO_VISIT, max_d
     matching_urls = []
     urls_in_progress = set()
     results_lock = asyncio.Lock()
-    
+
     # Semaphore for concurrency control
     semaphore = asyncio.Semaphore(concurrency)
-    
+
     async def process_url(session, url, depth):
         """Process a single URL asynchronously."""
         nonlocal visited_urls_data, matching_urls
-        
+
         async with semaphore:
             if stop_event and stop_event.is_set():
                 return
-            
+
             # Check if we've already hit the limit
             async with results_lock:
                 if len(visited_urls_data) >= max_urls:
                     return
                 url_number = len(visited_urls_data) + 1
-            
+
             logger.info(f"\n[{url_number}/{max_urls}] Depth {depth}: {url}")
-            
+
             # Check robots.txt compliance (sync operation, but fast due to caching)
             if not can_crawl(url, robots_cache):
                 logger.info("  [Skipped] Blocked by robots.txt")
                 return
-            
+
             # Skip non-HTML file extensions
             if should_skip_url(url):
                 logger.info("  [Skipped] Non-HTML file extension")
                 return
-            
-            # Fetch the page
-            html, error, response_time = await fetch_page_async(session, url, rate_limiter)
+
+            # Fetch the page (use Playwright for JS rendering or aiohttp)
+            if use_js:
+                await rate_limiter.wait_async(url)
+                html, error, response_time = await fetch_with_playwright(url)
+            else:
+                html, error, response_time = await fetch_page_async(session, url, rate_limiter)
             
             # Create URL data record
             url_data = {
@@ -1022,23 +1075,26 @@ async def crawl_async(start_url, search_query, max_urls=MAX_URLS_TO_VISIT, max_d
         'urls_matched': len(matching_urls),
         'total_time': total_time,
         'timestamp': datetime.now().isoformat(),
-        'mode': 'async'
+        'mode': 'async',
+        'js_rendering': use_js
     }
-    
+
     return visited_urls_data, matching_urls, crawl_metadata
 
 
 def run_async_crawl(start_url, search_query, max_urls=MAX_URLS_TO_VISIT, max_depth=None,
                     same_domain_only=False, concurrency=DEFAULT_CONCURRENCY,
-                    politeness_delay=DEFAULT_POLITENESS_DELAY, stop_event=None, form_handler=None):
+                    politeness_delay=DEFAULT_POLITENESS_DELAY, stop_event=None,
+                    form_handler=None, use_js=False):
     """
     Wrapper to run async crawl from sync code.
-    
+
     This is useful for running from the GUI or other sync contexts.
     """
     return asyncio.run(crawl_async(
         start_url, search_query, max_urls, max_depth,
-        same_domain_only, concurrency, politeness_delay, stop_event, form_handler
+        same_domain_only, concurrency, politeness_delay, stop_event,
+        form_handler, use_js
     ))
 
 
@@ -1243,9 +1299,12 @@ Examples:
   # GUI mode
   python crawler.py --gui
   
+  # JS-rendered pages (requires playwright)
+  python crawler.py --url https://example.com --query "privacy" --js
+
   # Sync mode (original behavior)
   python crawler.py --url https://example.com --query "privacy" --sync
-  
+
   # Same-domain only mode with export
   python crawler.py --url https://example.com --query "contact" --same-domain-only --export-json
         """
@@ -1267,6 +1326,8 @@ Examples:
                         help=f'Number of concurrent requests (default: {DEFAULT_CONCURRENCY})')
     parser.add_argument('--delay', type=float, default=DEFAULT_POLITENESS_DELAY,
                         help=f'Politeness delay in seconds between requests to same domain (default: {DEFAULT_POLITENESS_DELAY})')
+    parser.add_argument('--js', action='store_true',
+                        help='Use Playwright headless Chromium for JS-rendered pages')
     
     # Export options
     parser.add_argument('--export-json', type=str, nargs='?', const='', metavar='FILE',
@@ -1350,12 +1411,21 @@ def main():
             
             logger.info("=" * 60 + "\n")
         
+        # Validate --js flag
+        use_js = args.js
+        if use_js and not PLAYWRIGHT_AVAILABLE:
+            logger.error("--js requires playwright. Install with: pip install playwright && playwright install chromium")
+            return
+        if use_js and args.sync:
+            logger.error("--js requires async mode. Remove --sync to use JS rendering.")
+            return
+
         # Run the crawler (async by default if available)
         if args.sync or not ASYNC_AVAILABLE:
             if not args.sync:
                 logger.info("Async mode not available, using sync mode")
             visited_urls_data, matching_urls, crawl_metadata = crawl(
-                start_url, 
+                start_url,
                 search_query,
                 max_urls=args.max_urls,
                 max_depth=args.max_depth,
@@ -1364,14 +1434,15 @@ def main():
             )
         else:
             visited_urls_data, matching_urls, crawl_metadata = run_async_crawl(
-                start_url, 
+                start_url,
                 search_query,
                 max_urls=args.max_urls,
                 max_depth=args.max_depth,
                 same_domain_only=args.same_domain_only,
                 concurrency=args.concurrency,
                 politeness_delay=args.delay,
-                form_handler=form_handler
+                form_handler=form_handler,
+                use_js=use_js
             )
         
         # Print results
