@@ -743,7 +743,8 @@ def search_page(html, query):
         True if the query is found, False otherwise
     """
     text = extract_text(html)
-    return query.lower() in text
+    terms = [t.strip().lower() for t in query.split(",") if t.strip()]
+    return any(term in text for term in terms)
 
 
 # ============================================================================
@@ -1628,8 +1629,107 @@ def run_gui():
     """
     import os
     import tkinter as tk
+    import tkinter.font as tkfont
     from tkinter import messagebox, scrolledtext, filedialog, ttk
-    
+
+    def _first_available_font(*candidates):
+        available = set(tkfont.families())
+        for name in candidates:
+            if name in available:
+                return name
+        return None
+
+    def _apply_gui_theme(root_window):
+        """Dark slate + amber accents; tuned for tkinter/ttk limitations."""
+        colors = {
+            "bg": "#0e1318",
+            "bg_elev": "#161d28",
+            "bg_inset": "#0a0e12",
+            "fg": "#e8e2d9",
+            "fg_dim": "#8f9bab",
+            "accent": "#e4a54a",
+            "accent_muted": "#b8832f",
+            "ok": "#6ecf9a",
+            "warn": "#e8c547",
+            "danger": "#e07070",
+            "border": "#2a3544",
+            "log_bg": "#080b0f",
+            "log_fg": "#c8d0dc",
+        }
+        root_window.configure(bg=colors["bg"])
+
+        body_family = _first_available_font(
+            "IBM Plex Sans",
+            "Source Sans 3",
+            "Ubuntu",
+            "DejaVu Sans",
+        ) or "TkDefaultFont"
+        mono_family = _first_available_font(
+            "JetBrains Mono",
+            "IBM Plex Mono",
+            "DejaVu Sans Mono",
+        ) or "TkFixedFont"
+        display_family = _first_available_font(
+            "Fraunces",
+            "Playfair Display",
+            "Georgia",
+            "DejaVu Serif",
+        ) or body_family
+
+        fonts = {
+            "display": tkfont.Font(family=display_family, size=18, weight="bold"),
+            "subtitle": tkfont.Font(family=body_family, size=10),
+            "body": tkfont.Font(family=body_family, size=10),
+            "small": tkfont.Font(family=body_family, size=9),
+            "mono": tkfont.Font(family=mono_family, size=10),
+            "mono_sm": tkfont.Font(family=mono_family, size=9),
+        }
+
+        style = ttk.Style(root_window)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+
+        style.configure(
+            "TFrame",
+            background=colors["bg_elev"],
+        )
+        style.configure(
+            "TLabelFrame",
+            background=colors["bg_elev"],
+            foreground=colors["accent"],
+            bordercolor=colors["border"],
+            relief="solid",
+            borderwidth=1,
+        )
+        style.configure(
+            "TLabelFrame.Label",
+            background=colors["bg_elev"],
+            foreground=colors["accent"],
+            font=fonts["small"],
+        )
+        style.configure(
+            "TLabel",
+            background=colors["bg_elev"],
+            foreground=colors["fg"],
+            font=fonts["body"],
+        )
+        style.configure(
+            "TEntry",
+            fieldbackground=colors["bg_inset"],
+            foreground=colors["fg"],
+            insertcolor=colors["accent"],
+            bordercolor=colors["border"],
+        )
+        style.map(
+            "TEntry",
+            fieldbackground=[("disabled", colors["bg_inset"])],
+            foreground=[("disabled", colors["fg_dim"])],
+        )
+
+        return colors, fonts, body_family, mono_family, display_family
+
     # Setup GUI logger with file output only
     gui_logger = logging.getLogger("WebCrawler.GUI")
     gui_logger.setLevel(logging.INFO)
@@ -1643,7 +1743,63 @@ def run_gui():
 
     root = tk.Tk()
     root.title("Web Crawler - Async Edition" if ASYNC_AVAILABLE else "Web Crawler")
-    root.geometry("900x750")
+    root.geometry("920x780")
+    root.minsize(720, 560)
+
+    colors, fonts, _bf, _mf, _display_family = _apply_gui_theme(root)
+
+    entry_opts = {
+        "bg": colors["bg_inset"],
+        "fg": colors["fg"],
+        "insertbackground": colors["accent"],
+        "relief": "flat",
+        "highlightthickness": 1,
+        "highlightbackground": colors["border"],
+        "highlightcolor": colors["accent"],
+        "font": fonts["body"],
+    }
+
+    def chk_on(bg):
+        return {
+            "bg": bg,
+            "fg": colors["fg"],
+            "selectcolor": colors["bg_inset"],
+            "activebackground": colors["bg_elev"],
+            "activeforeground": colors["fg"],
+            "font": fonts["body"],
+        }
+
+    btn_primary = {
+        "bg": colors["accent"],
+        "fg": "#1a1208",
+        "activebackground": colors["accent_muted"],
+        "activeforeground": "#1a1208",
+        "relief": "flat",
+        "bd": 0,
+        "padx": 18,
+        "pady": 8,
+        "cursor": "hand2",
+        "font": fonts["body"],
+    }
+    btn_secondary = {
+        "bg": colors["bg_elev"],
+        "fg": colors["fg"],
+        "activebackground": colors["border"],
+        "activeforeground": colors["fg"],
+        "relief": "flat",
+        "bd": 0,
+        "padx": 14,
+        "pady": 8,
+        "highlightthickness": 1,
+        "highlightbackground": colors["border"],
+        "cursor": "hand2",
+        "font": fonts["body"],
+    }
+    btn_danger = {
+        **btn_secondary,
+        "fg": colors["danger"],
+        "highlightbackground": colors["danger"],
+    }
 
     url_var = tk.StringVar()
     query_var = tk.StringVar()
@@ -1662,97 +1818,183 @@ def run_gui():
     
     stop_event_holder = {"event": None}
 
-    inputs_frame = ttk.LabelFrame(root, text="Inputs", padding=10)
-    inputs_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=6)
+    # --- Header ---
+    header = tk.Frame(root, bg=colors["bg"], highlightthickness=0)
+    header.grid(row=0, column=0, columnspan=3, sticky="ew", padx=0, pady=(10, 4))
+    header_inner = tk.Frame(header, bg=colors["bg_elev"], highlightthickness=1, highlightbackground=colors["border"])
+    header_inner.pack(fill="x", padx=10, pady=2)
+    accent_bar = tk.Frame(header_inner, bg=colors["accent"], width=4)
+    accent_bar.pack(side=tk.LEFT, fill="y")
+    title_block = tk.Frame(header_inner, bg=colors["bg_elev"])
+    title_block.pack(side=tk.LEFT, fill="both", expand=True, padx=14, pady=12)
+    tk.Label(
+        title_block,
+        text="Web Crawler",
+        font=fonts["display"],
+        bg=colors["bg_elev"],
+        fg=colors["fg"],
+    ).pack(anchor="w")
+    tk.Label(
+        title_block,
+        text="BFS crawl · keyword search · polite async fetching",
+        font=fonts["subtitle"],
+        bg=colors["bg_elev"],
+        fg=colors["fg_dim"],
+    ).pack(anchor="w", pady=(4, 0))
+
+    inputs_frame = ttk.LabelFrame(root, text="Crawl inputs", padding=10)
+    inputs_frame.grid(row=1, column=0, columnspan=3, sticky="ew", padx=10, pady=6)
     inputs_frame.grid_columnconfigure(1, weight=1)
 
     ttk.Label(inputs_frame, text="Starting URL:").grid(row=0, column=0, sticky="w", padx=6, pady=4)
     url_entry = ttk.Entry(inputs_frame, textvariable=url_var, width=70)
     url_entry.grid(row=0, column=1, sticky="ew", padx=6, pady=4)
 
-    ttk.Label(inputs_frame, text="Search Query:").grid(row=1, column=0, sticky="w", padx=6, pady=4)
+    ttk.Label(inputs_frame, text="Search query:").grid(row=1, column=0, sticky="w", padx=6, pady=4)
     query_entry = ttk.Entry(inputs_frame, textvariable=query_var, width=40)
     query_entry.grid(row=1, column=1, sticky="ew", padx=6, pady=4)
 
-    # Row 3: Async options
-    async_frame = tk.LabelFrame(root, text="Performance Options", padx=8, pady=4)
-    async_frame.grid(row=3, column=0, columnspan=3, sticky="ew", padx=8, pady=4)
-    
-    async_check = tk.Checkbutton(
-        async_frame, text="Async mode (faster)", 
-        variable=use_async_var,
-        state="normal" if ASYNC_AVAILABLE else "disabled"
-    )
-    async_check.pack(side=tk.LEFT, padx=5)
-    
-    tk.Label(async_frame, text="Concurrency:").pack(side=tk.LEFT, padx=(20, 5))
-    concurrency_entry = tk.Entry(async_frame, textvariable=concurrency_var, width=5)
-    concurrency_entry.pack(side=tk.LEFT)
-    
-    tk.Label(async_frame, text="Delay (sec):").pack(side=tk.LEFT, padx=(20, 5))
-    delay_entry = tk.Entry(async_frame, textvariable=delay_var, width=5)
-    delay_entry.pack(side=tk.LEFT)
-    
-    # Row 4: Same Domain Only checkbox
-    same_domain_check = tk.Checkbutton(
-        root, text="Crawl same domain only", 
-        variable=same_domain_var
-    )
-    same_domain_check.grid(row=4, column=0, columnspan=2, sticky="w", padx=8, pady=4)
+    async_frame = ttk.LabelFrame(root, text="Performance", padding=(10, 8))
+    async_frame.grid(row=2, column=0, columnspan=3, sticky="ew", padx=10, pady=4)
+    async_inner = tk.Frame(async_frame, bg=colors["bg_elev"])
+    async_inner.pack(fill="x")
 
-    # Row 4.5: Authentication Panel
-    auth_frame = tk.LabelFrame(root, text="🔐 Authentication (Optional)", padx=8, pady=8)
-    auth_frame.grid(row=4, column=2, rowspan=2, sticky="nsew", padx=8, pady=4)
-    
+    async_check = tk.Checkbutton(
+        async_inner,
+        text="Async mode (faster)",
+        variable=use_async_var,
+        state="normal" if ASYNC_AVAILABLE else "disabled",
+        **chk_on(colors["bg_elev"]),
+    )
+    async_check.pack(side=tk.LEFT, padx=4)
+
+    tk.Label(async_inner, text="Concurrency:", bg=colors["bg_elev"], fg=colors["fg"], font=fonts["body"]).pack(
+        side=tk.LEFT, padx=(18, 4)
+    )
+    concurrency_entry = tk.Entry(async_inner, textvariable=concurrency_var, width=5, **entry_opts)
+    concurrency_entry.pack(side=tk.LEFT)
+
+    tk.Label(async_inner, text="Delay (sec):", bg=colors["bg_elev"], fg=colors["fg"], font=fonts["body"]).pack(
+        side=tk.LEFT, padx=(18, 4)
+    )
+    delay_entry = tk.Entry(async_inner, textvariable=delay_var, width=5, **entry_opts)
+    delay_entry.pack(side=tk.LEFT)
+
+    same_domain_check = tk.Checkbutton(
+        root,
+        text="Crawl same domain only",
+        variable=same_domain_var,
+        **chk_on(colors["bg"]),
+    )
+    same_domain_check.grid(row=3, column=0, columnspan=2, sticky="w", padx=12, pady=(2, 4))
+
+    auth_frame = ttk.LabelFrame(root, text="Authentication (optional)", padding=8)
+    auth_frame.grid(row=3, column=2, rowspan=2, sticky="nsew", padx=10, pady=4)
+
     enable_auth_var = tk.BooleanVar(value=False)
     login_url_var = tk.StringVar()
     username_var = tk.StringVar()
     password_var = tk.StringVar()
-    
+
     def toggle_auth_fields():
-        state = 'normal' if enable_auth_var.get() else 'disabled'
+        state = "normal" if enable_auth_var.get() else "disabled"
         login_url_entry.config(state=state)
         username_entry.config(state=state)
         password_entry.config(state=state)
-    
-    tk.Checkbutton(auth_frame, text="Enable Login", 
-                  variable=enable_auth_var,
-                  command=toggle_auth_fields).grid(row=0, column=0, columnspan=2, sticky='w', pady=2)
-    
-    tk.Label(auth_frame, text="Login URL:", font=('TkDefaultFont', 8)).grid(row=1, column=0, sticky='w', pady=2)
-    login_url_entry = tk.Entry(auth_frame, textvariable=login_url_var, width=25, state='disabled')
-    login_url_entry.grid(row=1, column=1, sticky='ew', pady=2, padx=(5, 0))
-    
-    tk.Label(auth_frame, text="Username:", font=('TkDefaultFont', 8)).grid(row=2, column=0, sticky='w', pady=2)
-    username_entry = tk.Entry(auth_frame, textvariable=username_var, width=25, state='disabled')
-    username_entry.grid(row=2, column=1, sticky='ew', pady=2, padx=(5, 0))
-    
-    tk.Label(auth_frame, text="Password:", font=('TkDefaultFont', 8)).grid(row=3, column=0, sticky='w', pady=2)
-    password_entry = tk.Entry(auth_frame, textvariable=password_var, width=25, show="*", state='disabled')
-    password_entry.grid(row=3, column=1, sticky='ew', pady=2, padx=(5, 0))
-    
-    auth_frame.columnconfigure(1, weight=1)
 
-    # Row 5: Export format and Log level
-    tk.Label(root, text="Export Format:").grid(row=5, column=0, sticky="w", padx=8, pady=4)
-    export_frame = tk.Frame(root)
-    export_frame.grid(row=5, column=1, sticky="w", padx=8, pady=4)
-    tk.Radiobutton(export_frame, text="JSON", variable=export_format_var, value="json").pack(side=tk.LEFT)
-    tk.Radiobutton(export_frame, text="CSV", variable=export_format_var, value="csv").pack(side=tk.LEFT)
-    tk.Radiobutton(export_frame, text="Both", variable=export_format_var, value="both").pack(side=tk.LEFT)
-    tk.Radiobutton(export_frame, text="None", variable=export_format_var, value="none").pack(side=tk.LEFT)
-    
-    tk.Label(root, text="Log Level:").grid(row=5, column=1, sticky="e", padx=8, pady=4)
-    log_level_menu = tk.OptionMenu(root, log_level_var, "DEBUG", "INFO", "WARNING", "ERROR")
-    log_level_menu.grid(row=5, column=2, sticky="w", padx=8, pady=4)
+    auth_inner = tk.Frame(auth_frame, bg=colors["bg_elev"])
+    auth_inner.pack(fill="both", expand=True)
 
-    # Row 7: Log box (moved down to make room for async options)
-    log_box = scrolledtext.ScrolledText(root, width=100, height=28, state="normal")
-    log_box.grid(row=7, column=0, columnspan=3, padx=8, pady=8, sticky="nsew")
+    auth_enable_check = tk.Checkbutton(
+        auth_inner,
+        text="Enable login",
+        variable=enable_auth_var,
+        command=toggle_auth_fields,
+        **chk_on(colors["bg_elev"]),
+    )
+    auth_enable_check.grid(row=0, column=0, columnspan=2, sticky="w", pady=2)
 
-    # Grid stretch
-    root.grid_columnconfigure(1, weight=1)
-    root.grid_rowconfigure(7, weight=1)
+    tk.Label(auth_inner, text="Login URL:", bg=colors["bg_elev"], fg=colors["fg_dim"], font=fonts["small"]).grid(
+        row=1, column=0, sticky="w", pady=2
+    )
+    login_url_entry = tk.Entry(auth_inner, textvariable=login_url_var, width=25, state="disabled", **entry_opts)
+    login_url_entry.grid(row=1, column=1, sticky="ew", pady=2, padx=(6, 0))
+
+    tk.Label(auth_inner, text="Username:", bg=colors["bg_elev"], fg=colors["fg_dim"], font=fonts["small"]).grid(
+        row=2, column=0, sticky="w", pady=2
+    )
+    username_entry = tk.Entry(auth_inner, textvariable=username_var, width=25, state="disabled", **entry_opts)
+    username_entry.grid(row=2, column=1, sticky="ew", pady=2, padx=(6, 0))
+
+    tk.Label(auth_inner, text="Password:", bg=colors["bg_elev"], fg=colors["fg_dim"], font=fonts["small"]).grid(
+        row=3, column=0, sticky="w", pady=2
+    )
+    password_entry = tk.Entry(auth_inner, textvariable=password_var, width=25, show="*", state="disabled", **entry_opts)
+    password_entry.grid(row=3, column=1, sticky="ew", pady=2, padx=(6, 0))
+
+    auth_inner.columnconfigure(1, weight=1)
+
+    export_row = tk.Frame(root, bg=colors["bg"])
+    export_row.grid(row=4, column=0, columnspan=2, sticky="nw", padx=10, pady=6)
+
+    tk.Label(export_row, text="Export format", bg=colors["bg"], fg=colors["fg_dim"], font=fonts["small"]).grid(
+        row=0, column=0, sticky="w"
+    )
+    export_frame = tk.Frame(export_row, bg=colors["bg"])
+    export_frame.grid(row=1, column=0, sticky="w", pady=(4, 10))
+
+    export_radios = []
+    for label, value in (
+        ("JSON", "json"),
+        ("CSV", "csv"),
+        ("Both", "both"),
+        ("None", "none"),
+    ):
+        rb = tk.Radiobutton(
+            export_frame,
+            text=label,
+            variable=export_format_var,
+            value=value,
+            **chk_on(colors["bg"]),
+        )
+        rb.pack(side=tk.LEFT, padx=(0, 10))
+        export_radios.append(rb)
+
+    tk.Label(export_row, text="Log level", bg=colors["bg"], fg=colors["fg_dim"], font=fonts["small"]).grid(
+        row=2, column=0, sticky="w"
+    )
+    log_level_menu = tk.OptionMenu(export_row, log_level_var, "DEBUG", "INFO", "WARNING", "ERROR")
+    log_level_menu.config(
+        bg=colors["bg_elev"],
+        fg=colors["fg"],
+        activebackground=colors["border"],
+        activeforeground=colors["fg"],
+        highlightthickness=1,
+        highlightbackground=colors["border"],
+        font=fonts["body"],
+    )
+    log_level_menu.grid(row=3, column=0, sticky="w", pady=(4, 0))
+
+    log_box = scrolledtext.ScrolledText(
+        root,
+        width=100,
+        height=26,
+        state="normal",
+        bg=colors["log_bg"],
+        fg=colors["log_fg"],
+        insertbackground=colors["accent"],
+        relief="flat",
+        highlightthickness=1,
+        highlightbackground=colors["border"],
+        font=fonts["mono"],
+        selectbackground=colors["accent_muted"],
+        selectforeground="#1a1208",
+    )
+    log_box.grid(row=6, column=0, columnspan=3, padx=10, pady=(4, 10), sticky="nsew")
+
+    for col in (0, 1, 2):
+        root.grid_columnconfigure(col, weight=1)
+    root.grid_rowconfigure(6, weight=1)
 
     def update_progress(current, total):
         if total and total > 0:
@@ -1769,10 +2011,12 @@ def run_gui():
             delay_entry,
             same_domain_check,
             async_check,
+            auth_enable_check,
             login_url_entry,
             username_entry,
             password_entry,
             log_level_menu,
+            *export_radios,
         ):
             try:
                 widget.configure(state=state)
@@ -1981,46 +2225,71 @@ def run_gui():
         guide_win.geometry("720x560")
         guide_win.minsize(480, 320)
         guide_win.transient(root)
+        guide_win.configure(bg=colors["bg"])
 
         body = scrolledtext.ScrolledText(
             guide_win,
             wrap="word",
             width=86,
             height=28,
-            font=("TkFixedFont", 10),
+            bg=colors["log_bg"],
+            fg=colors["log_fg"],
+            insertbackground=colors["accent"],
+            relief="flat",
+            highlightthickness=1,
+            highlightbackground=colors["border"],
+            font=fonts["mono"],
+            selectbackground=colors["accent_muted"],
+            selectforeground="#1a1208",
         )
-        body.pack(fill="both", expand=True, padx=8, pady=(8, 4))
+        body.pack(fill="both", expand=True, padx=10, pady=(10, 4))
         body.insert("1.0", SCRAPING_GUIDE_TEXT)
         body.configure(state="disabled")
 
-        close_row = tk.Frame(guide_win)
-        close_row.pack(fill="x", pady=(0, 8))
-        tk.Button(close_row, text="Close", command=guide_win.destroy, width=12).pack(side="right", padx=8)
+        close_row = tk.Frame(guide_win, bg=colors["bg"])
+        close_row.pack(fill="x", pady=(0, 10))
+        tk.Button(close_row, text="Close", command=guide_win.destroy, **btn_secondary).pack(side="right", padx=10)
 
-    # Row 6: Buttons
-    button_frame = tk.Frame(root)
-    button_frame.grid(row=6, column=0, columnspan=3, pady=6, padx=8, sticky="ew")
-    
-    start_button = tk.Button(button_frame, text="Run Crawl", command=start_crawl, width=15)
-    start_button.pack(side=tk.LEFT, padx=5)
+    button_frame = tk.Frame(root, bg=colors["bg"])
+    button_frame.grid(row=5, column=0, columnspan=3, pady=(4, 6), padx=10, sticky="ew")
 
-    stop_button = tk.Button(button_frame, text="Stop", command=stop_crawl, state="disabled", width=15)
-    stop_button.pack(side=tk.LEFT, padx=5)
+    start_button = tk.Button(button_frame, text="Run crawl", command=start_crawl, **btn_primary)
+    start_button.pack(side=tk.LEFT, padx=(0, 8))
+
+    stop_button = tk.Button(button_frame, text="Stop", command=stop_crawl, state="disabled", **btn_danger)
+    stop_button.pack(side=tk.LEFT, padx=0)
 
     tk.Button(
         button_frame,
         text="Scraping guide",
         command=show_scraping_guide,
-        width=14,
-    ).pack(side=tk.LEFT, padx=5)
-    
-    # Add async status label
+        **btn_secondary,
+    ).pack(side=tk.LEFT, padx=(8, 0))
+
     if ASYNC_AVAILABLE:
-        status_label = tk.Label(button_frame, text="✓ Async mode available", fg="green")
+        status_label = tk.Label(
+            button_frame,
+            text="Async ready",
+            bg=colors["bg"],
+            fg=colors["ok"],
+            font=fonts["small"],
+        )
     else:
-        status_label = tk.Label(button_frame, text="⚠ Async not available (install aiohttp)", fg="orange")
+        status_label = tk.Label(
+            button_frame,
+            text="Install aiohttp for async",
+            bg=colors["bg"],
+            fg=colors["warn"],
+            font=fonts["small"],
+        )
     status_label.pack(side=tk.RIGHT, padx=5)
-    crawl_status_label = tk.Label(button_frame, textvariable=status_var)
+    crawl_status_label = tk.Label(
+        button_frame,
+        textvariable=status_var,
+        bg=colors["bg"],
+        fg=colors["accent"],
+        font=fonts["body"],
+    )
     crawl_status_label.pack(side=tk.RIGHT, padx=12)
 
     url_entry.focus_set()

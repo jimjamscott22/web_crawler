@@ -22,3 +22,4 @@ Thumbs.db
 .pytest_cache/
 
 crawl_results_*.json
+.cursor/hooks/state/continual-learning.json
