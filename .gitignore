@@ -11,6 +11,9 @@ __pycache__/
 # Logs
 *.log
 
+# Crawl exports and logs (see scrape_results/ next to crawler.py)
+scrape_results/
+
 # OS / editor cruft
 .DS_Store
 Thumbs.db
@@ -22,4 +25,6 @@ Thumbs.db
 .pytest_cache/
 
 crawl_results_*.json
+.cursor/hooks/state/continual-learning.json
+.cursor/hooks/state/continual-learning-index.json
 .cursor/hooks/state/continual-learning.json

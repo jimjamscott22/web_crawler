@@ -85,8 +85,37 @@ SKIP_EXTENSIONS = {
 DEFAULT_MAX_DEPTH = None  # None = unlimited
 DEFAULT_SAME_DOMAIN_ONLY = False
 DEFAULT_EXPORT_FORMAT = "json"  # json, csv, or both
-LOG_FILE = "crawler.log"
+
+# Crawl logs and default export paths live here (next to this file, not cwd)
+PROJECT_ROOT = Path(__file__).resolve().parent
+SCRAPER_OUTPUT_DIR = PROJECT_ROOT / "scrape_results"
+SCRAPER_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+LOG_FILE = str(SCRAPER_OUTPUT_DIR / "crawler.log")
 LOG_LEVEL = logging.INFO
+
+
+def resolve_export_path(filename):
+    """
+    Place relative export paths under SCRAPER_OUTPUT_DIR; keep absolute paths as-is.
+    """
+    p = Path(filename).expanduser()
+    if p.is_absolute():
+        p.parent.mkdir(parents=True, exist_ok=True)
+        return str(p)
+    out = SCRAPER_OUTPUT_DIR / p
+    out.parent.mkdir(parents=True, exist_ok=True)
+    return str(out)
+
+
+def resolve_gui_export_dir(dir_str):
+    """GUI optional export folder: empty -> SCRAPER_OUTPUT_DIR; relative paths are under PROJECT_ROOT."""
+    s = (dir_str or "").strip()
+    if not s:
+        return SCRAPER_OUTPUT_DIR
+    p = Path(s).expanduser()
+    if p.is_absolute():
+        return p
+    return PROJECT_ROOT / p
 
 
 # ============================================================================
@@ -1159,7 +1188,8 @@ def export_to_json(visited_urls_data, matching_urls, crawl_metadata, filename=No
     if filename is None:
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         filename = f"crawl_results_{timestamp}.json"
-    
+    filename = resolve_export_path(filename)
+
     data = {
         'metadata': crawl_metadata,
         'visited_urls': visited_urls_data,
@@ -1192,7 +1222,8 @@ def export_to_csv(visited_urls_data, matching_urls, crawl_metadata, filename=Non
     if filename is None:
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         filename = f"crawl_results_{timestamp}.csv"
-    
+    filename = resolve_export_path(filename)
+
     try:
         with open(filename, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
@@ -2179,21 +2210,23 @@ def run_gui():
                     )
                     root.after(0, lambda: set_results_text(formatted))
                     
-                    # Export results
+                    # Export results (default directory: scrape_results under project)
+                    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                    export_base = resolve_gui_export_dir(export_dir_var.get())
                     if export_format in ("json", "both"):
-                        filename = None
-                        export_dir = export_dir_var.get().strip()
-                        if export_dir:
-                            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-                            filename = os.path.join(export_dir, f"crawl_results_{timestamp}.json")
-                        export_to_json(visited_urls_data, matching_urls, crawl_metadata, filename)
+                        export_to_json(
+                            visited_urls_data,
+                            matching_urls,
+                            crawl_metadata,
+                            str(export_base / f"crawl_results_{timestamp}.json"),
+                        )
                     if export_format in ("csv", "both"):
-                        filename = None
-                        export_dir = export_dir_var.get().strip()
-                        if export_dir:
-                            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-                            filename = os.path.join(export_dir, f"crawl_results_{timestamp}.csv")
-                        export_to_csv(visited_urls_data, matching_urls, crawl_metadata, filename)
+                        export_to_csv(
+                            visited_urls_data,
+                            matching_urls,
+                            crawl_metadata,
+                            str(export_base / f"crawl_results_{timestamp}.csv"),
+                        )
                     
             except Exception as e:
                 with redirect_stdout(redirector):
