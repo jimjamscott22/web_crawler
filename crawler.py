@@ -1673,18 +1673,18 @@ def run_gui():
     def _apply_gui_theme(root_window):
         """Dark slate + amber accents; tuned for tkinter/ttk limitations."""
         colors = {
-            "bg": "#0e1318",
-            "bg_elev": "#161d28",
-            "bg_inset": "#0a0e12",
-            "fg": "#e8e2d9",
-            "fg_dim": "#8f9bab",
+            "bg": "#181c24",
+            "bg_elev": "#1f2535",
+            "bg_inset": "#252e3e",
+            "fg": "#dde3ec",
+            "fg_dim": "#7a8a9e",
             "accent": "#e4a54a",
             "accent_muted": "#b8832f",
             "ok": "#6ecf9a",
             "warn": "#e8c547",
             "danger": "#e07070",
-            "border": "#2a3544",
-            "log_bg": "#080b0f",
+            "border": "#313d52",
+            "log_bg": "#141820",
             "log_fg": "#c8d0dc",
         }
         root_window.configure(bg=colors["bg"])
