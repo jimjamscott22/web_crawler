@@ -54,8 +54,7 @@ This will install:
 - **beautifulsoup4**: HTML parsing and link extraction
 - **aiohttp**: Async HTTP client for high-performance crawling
 - **mechanicalsoup**: Form handling and authentication
-- **beautifulsoup4**: HTML parsing and link extraction
-- **aiohttp**: Async HTTP client for high-performance crawling
+- **playwright**: Headless browser for JS-rendered pages (optional, used with `--js`)
 
 ## Usage
 
@@ -148,10 +147,39 @@ python crawler.py --url https://example.com --query "privacy" --export-json --ex
 | `--concurrency` | `-c` | Concurrent requests | 5 |
 | `--delay` | | Politeness delay (seconds) | 1.0 |
 | `--sync` | | Use sync mode instead of async | false |
+| `--js` | | Use Playwright headless Chromium for JS-rendered pages | false |
 | `--export-json` | | Export to JSON file | - |
 | `--export-csv` | | Export to CSV file | - |
 | `--log-level` | | DEBUG, INFO, WARNING, ERROR | INFO |
 | `--gui` | | Run in GUI mode | false |
+
+## Docker Usage
+
+Build the image:
+
+```bash
+docker build -t web-crawler .
+```
+
+Run a CLI crawl:
+
+```bash
+docker run --rm web-crawler --url https://example.com --query "privacy"
+```
+
+JS-rendered mode (uses Playwright headless Chromium):
+
+```bash
+docker run --rm web-crawler --url https://example.com --query "privacy" --js
+```
+
+Export results to a local directory:
+
+```bash
+docker run --rm -v $(pwd)/output:/app/output web-crawler --url https://example.com --export-json
+```
+
+> **Note:** `--gui` is not supported in Docker since there is no display server.
 
 ## Technical Details
 

@@ -21,3 +21,4 @@ Thumbs.db
 .env
 .pytest_cache/
 
+crawl_results_*.json
