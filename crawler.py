@@ -1552,6 +1552,76 @@ def format_results_for_gui(visited_urls_data, matching_urls, crawl_metadata):
     return "\n".join(lines)
 
 
+SCRAPING_GUIDE_TEXT = """\
+HOW TO RUN A GOOD WEB SCRAPE (WITH THIS CRAWLER)
+================================================
+
+1) LEGAL & ETHICAL BASELINE
+   - Only crawl sites you are allowed to access. Read the site's Terms of Service.
+   - This tool checks robots.txt and skips disallowed paths when the file is available.
+   - Do not use crawls to harvest personal data, bypass paywalls, or overload servers.
+   - When in doubt, ask the site owner or use an official API instead.
+
+2) STARTING URL
+   - Use the real page where exploration should begin (often the site homepage or a
+     section index), with https:// when possible.
+   - Example: https://docs.python.org/3/
+
+3) SEARCH QUERY (WHAT GETS MATCHED)
+   - The crawler loads HTML and looks for your query in the page text (case-insensitive).
+   - Use words that actually appear on the pages you care about, not abstract concepts.
+   - Examples: "contact", "privacy policy", "tutorial", "MIT License"
+
+4) BE POLITE (PERFORMANCE OPTIONS)
+   - Delay (seconds between requests to the same host): use at least ~1.0 s for small
+     or unknown sites; you can go lower only if you know the host allows it.
+   - Concurrency: start low (e.g. 3–5). Raise gradually if the site is large and stable.
+   - If you get HTTP errors or slowdowns, increase delay and lower concurrency.
+
+5) SAME DOMAIN ONLY
+   - Turn ON when you only want pages on the same site as the starting URL.
+   - Leave OFF if you intentionally want to follow links to other domains (use sparingly).
+
+6) AUTHENTICATION
+   - Enable only for sites where you have an account and scraping is permitted.
+   - Use the site's real login URL. Sessions may be saved for later runs (see README).
+
+7) EXPORT & LOGS
+   - JSON/CSV export helps you review matches offline. Logs go to crawler.log.
+
+8) COMMAND-LINE EXAMPLES (SAME IDEAS AS THE GUI)
+   - Gentle crawl on one site, look for a keyword:
+     python crawler.py --url https://example.com --query "about" \\
+       --max-urls 30 --same-domain-only --delay 1.0 --concurrency 4
+
+   - Limit how deep the crawl goes from the start (0 = start page only):
+     python crawler.py --url https://news.ycombinator.com --query "Python" \\
+       --max-urls 15 --max-depth 2 --delay 1.5
+
+   - Slower, simple sync mode (no aiohttp concurrency):
+     python crawler.py --url https://example.com --query "contact" --sync
+
+   - Export results:
+     python crawler.py --url https://example.com --query "privacy" \\
+       --export-json --export-csv
+
+   - Open the GUI (all options in one place):
+     python crawler.py --gui
+
+9) WHEN RESULTS ARE DISAPPOINTING
+   - Try a shorter or more common query; check spelling.
+   - Many pages load key text with JavaScript; this crawler is HTML-oriented unless you
+     use CLI options that involve browser rendering (see README / --help).
+   - Increase max URLs or depth only if robots.txt and the site's rules allow it.
+
+10) QUICK CHECKLIST BEFORE YOU CLICK "RUN CRAWL"
+   [ ] I have permission / a legitimate reason to crawl this site.
+   [ ] Starting URL and query make sense for what I want to find.
+   [ ] Delay and concurrency are reasonable for this host.
+   [ ] Same-domain-only matches whether I want internal or external links.
+"""
+
+
 def run_gui():
     """
     Tkinter GUI wrapper around the existing crawler with all new features.
@@ -1905,6 +1975,28 @@ def run_gui():
         status_var.set("Stopped")
         stop_button.config(state="disabled")
 
+    def show_scraping_guide():
+        guide_win = tk.Toplevel(root)
+        guide_win.title("How to run a good web scrape")
+        guide_win.geometry("720x560")
+        guide_win.minsize(480, 320)
+        guide_win.transient(root)
+
+        body = scrolledtext.ScrolledText(
+            guide_win,
+            wrap="word",
+            width=86,
+            height=28,
+            font=("TkFixedFont", 10),
+        )
+        body.pack(fill="both", expand=True, padx=8, pady=(8, 4))
+        body.insert("1.0", SCRAPING_GUIDE_TEXT)
+        body.configure(state="disabled")
+
+        close_row = tk.Frame(guide_win)
+        close_row.pack(fill="x", pady=(0, 8))
+        tk.Button(close_row, text="Close", command=guide_win.destroy, width=12).pack(side="right", padx=8)
+
     # Row 6: Buttons
     button_frame = tk.Frame(root)
     button_frame.grid(row=6, column=0, columnspan=3, pady=6, padx=8, sticky="ew")
@@ -1914,6 +2006,13 @@ def run_gui():
 
     stop_button = tk.Button(button_frame, text="Stop", command=stop_crawl, state="disabled", width=15)
     stop_button.pack(side=tk.LEFT, padx=5)
+
+    tk.Button(
+        button_frame,
+        text="Scraping guide",
+        command=show_scraping_guide,
+        width=14,
+    ).pack(side=tk.LEFT, padx=5)
     
     # Add async status label
     if ASYNC_AVAILABLE:
