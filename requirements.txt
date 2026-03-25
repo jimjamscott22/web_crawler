@@ -1,3 +1,5 @@
+# For reproducible installs, use: uv sync
+# Direct dependencies (see pyproject.toml / uv.lock for resolved versions)
 requests
 beautifulsoup4
 aiohttp

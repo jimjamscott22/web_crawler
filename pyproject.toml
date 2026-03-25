@@ -1,0 +1,15 @@
+[project]
+name = "web-crawler"
+version = "0.1.0"
+description = "Async web crawler with BFS traversal, rate limiting, and search"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "requests",
+    "beautifulsoup4",
+    "aiohttp",
+    "mechanicalsoup",
+]
+
+[tool.uv]
+package = false
