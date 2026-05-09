@@ -191,6 +191,35 @@ def get_robots_parser(base_url):
         return None
 
 
+async def get_robots_parser_async(session, base_url):
+    """
+    Fetch and parse robots.txt using the async HTTP session.
+    """
+    try:
+        parsed = urlparse(base_url)
+        robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
+
+        parser = RobotFileParser()
+        parser.set_url(robots_url)
+
+        headers = {"User-Agent": USER_AGENT}
+        async with session.get(
+            robots_url,
+            headers=headers,
+            timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT),
+        ) as response:
+            if response.status >= 400:
+                logger.debug(f"robots.txt unavailable for {base_url}: HTTP {response.status}")
+                return None
+            text = await response.text()
+
+        parser.parse(text.splitlines())
+        return parser
+    except Exception as e:
+        logger.warning(f"Could not fetch robots.txt for {base_url}: {e}")
+        return None
+
+
 def can_crawl(url, robots_cache):
     """
     Check if we're allowed to crawl a URL based on robots.txt rules.
@@ -220,6 +249,27 @@ def can_crawl(url, robots_cache):
         return parser.can_fetch(USER_AGENT, url)
     except Exception:
         # If anything goes wrong, allow crawling (fail open)
+        return True
+
+
+async def can_crawl_async(url, robots_cache, session, robots_locks):
+    """
+    Async robots.txt check with per-domain cache locking.
+    """
+    try:
+        parsed = urlparse(url)
+        base_url = f"{parsed.scheme}://{parsed.netloc}"
+
+        async with robots_locks[base_url]:
+            if base_url not in robots_cache:
+                robots_cache[base_url] = await get_robots_parser_async(session, base_url)
+            parser = robots_cache[base_url]
+
+        if parser is None:
+            return True
+
+        return parser.can_fetch(USER_AGENT, url)
+    except Exception:
         return True
 
 
@@ -485,7 +535,8 @@ class DomainRateLimiter:
         """
         self.delay = delay
         self.last_request_time = defaultdict(float)
-        self._lock = asyncio.Lock() if ASYNC_AVAILABLE else threading.Lock()
+        self._async_locks = defaultdict(asyncio.Lock) if ASYNC_AVAILABLE else None
+        self._sync_locks = defaultdict(threading.Lock)
     
     def get_domain(self, url):
         """Extract domain from URL."""
@@ -497,7 +548,7 @@ class DomainRateLimiter:
             return
             
         domain = self.get_domain(url)
-        async with self._lock:
+        async with self._async_locks[domain]:
             now = time.time()
             elapsed = now - self.last_request_time[domain]
             if elapsed < self.delay:
@@ -508,7 +559,7 @@ class DomainRateLimiter:
     def wait_sync(self, url):
         """Sync wait for politeness delay if needed."""
         domain = self.get_domain(url)
-        with self._lock:
+        with self._sync_locks[domain]:
             now = time.time()
             elapsed = now - self.last_request_time[domain]
             if elapsed < self.delay:
@@ -702,36 +753,41 @@ def extract_links(html, base_url):
     Returns:
         List of normalized, absolute URLs found on the page
     """
-    links = []
-    
     try:
         soup = BeautifulSoup(html, "html.parser")
-        
-        # Find all anchor tags with href attributes
-        for anchor in soup.find_all("a", href=True):
-            href = anchor["href"]
-            
-            # Skip empty hrefs, javascript links, and anchors
-            if not href or href.startswith(("#", "javascript:", "mailto:", "tel:")):
-                continue
-            
-            # Convert relative URLs to absolute URLs
-            absolute_url = urljoin(base_url, href)
-            
-            # Parse and validate the URL
-            parsed = urlparse(absolute_url)
-            
-            # Only keep HTTP/HTTPS URLs
-            if parsed.scheme in ("http", "https"):
-                # Remove fragment (the part after #) for cleaner URLs
-                clean_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
-                if parsed.query:
-                    clean_url += f"?{parsed.query}"
-                links.append(clean_url)
-        
+        return extract_links_from_soup(soup, base_url)
     except Exception as e:
         logger.warning(f"Error parsing links: {e}")
-    
+        return []
+
+
+def extract_links_from_soup(soup, base_url):
+    """
+    Extract and normalize all links from an already parsed HTML document.
+    """
+    links = []
+
+    for anchor in soup.find_all("a", href=True):
+        href = anchor["href"]
+
+        # Skip empty hrefs, javascript links, and anchors
+        if not href or href.startswith(("#", "javascript:", "mailto:", "tel:")):
+            continue
+
+        # Convert relative URLs to absolute URLs
+        absolute_url = urljoin(base_url, href)
+
+        # Parse and validate the URL
+        parsed = urlparse(absolute_url)
+
+        # Only keep HTTP/HTTPS URLs
+        if parsed.scheme in ("http", "https"):
+            # Remove fragment (the part after #) for cleaner URLs
+            clean_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+            if parsed.query:
+                clean_url += f"?{parsed.query}"
+            links.append(clean_url)
+
     return links
 
 
@@ -747,17 +803,20 @@ def extract_text(html):
     """
     try:
         soup = BeautifulSoup(html, "html.parser")
-        
-        # Remove script and style elements (not readable content)
-        for element in soup(["script", "style", "meta", "link"]):
-            element.decompose()
-        
-        # Get text and normalize whitespace
-        text = soup.get_text(separator=" ", strip=True)
-        return text.lower()
-        
+        return extract_text_from_soup(soup)
     except Exception:
         return ""
+
+
+def extract_text_from_soup(soup):
+    """
+    Extract readable text from an already parsed HTML document.
+    """
+    for element in soup(["script", "style", "meta", "link"]):
+        element.decompose()
+
+    text = soup.get_text(separator=" ", strip=True)
+    return text.lower()
 
 
 def search_page(html, query):
@@ -772,6 +831,13 @@ def search_page(html, query):
         True if the query is found, False otherwise
     """
     text = extract_text(html)
+    return search_text(text, query)
+
+
+def search_text(text, query):
+    """
+    Check if normalized page text contains any comma-separated query term.
+    """
     terms = [t.strip().lower() for t in query.split(",") if t.strip()]
     return any(term in text for term in terms)
 
@@ -817,6 +883,7 @@ def crawl(start_url, search_query, max_urls=MAX_URLS_TO_VISIT, max_depth=None,
     # Initialize data structures
     frontier = URLFrontier(start_url, max_depth=max_depth, same_domain_only=same_domain_only)
     robots_cache = {}  # Cache robots.txt parsers per domain
+    rate_limiter = DomainRateLimiter()
     browser = create_browser()
     visited_urls_data = []  # List of dicts with URL info
     matching_urls = []  # URLs where the query was found
@@ -840,11 +907,17 @@ def crawl(start_url, search_query, max_urls=MAX_URLS_TO_VISIT, max_depth=None,
         if not can_crawl(current_url, robots_cache):
             logger.info("  [Skipped] Blocked by robots.txt")
             continue
+
+        # Skip non-HTML file extensions
+        if should_skip_url(current_url):
+            logger.info("  [Skipped] Non-HTML file extension")
+            continue
         
         # Record fetch start time
         fetch_start = time.time()
         
         # Fetch the page
+        rate_limiter.wait_sync(current_url)
         html, error = fetch_page(current_url, browser)
         
         # Calculate response time
@@ -876,14 +949,21 @@ def crawl(start_url, search_query, max_urls=MAX_URLS_TO_VISIT, max_depth=None,
         if progress_callback:
             progress_callback(len(visited_urls_data), max_urls)
         
+        try:
+            soup = BeautifulSoup(html, "html.parser")
+        except Exception as e:
+            logger.warning(f"Error parsing page: {e}")
+            continue
+
         # Search for the query
-        if search_page(html, search_query):
+        page_text = extract_text_from_soup(soup)
+        if search_text(page_text, search_query):
             matching_urls.append(current_url)
             url_data['matched'] = True
             logger.info(f"  [Match!] Query '{search_query}' found on this page")
         
         # Extract links from the page
-        links = extract_links(html, current_url)
+        links = extract_links_from_soup(soup, current_url)
         logger.info(f"  [Links] Found {len(links)} links on this page")
         
         # Display discovered links (first 5 for brevity)
@@ -967,127 +1047,188 @@ async def crawl_async(start_url, search_query, max_urls=MAX_URLS_TO_VISIT, max_d
     start_time = time.time()
 
     # Initialize data structures
-    frontier = URLFrontier(start_url, max_depth=max_depth, same_domain_only=same_domain_only)
+    start_domain = urlparse(start_url).netloc
+    crawl_queue = asyncio.PriorityQueue()
+    seen_urls = {start_url}
+    enqueue_lock = asyncio.Lock()
+    enqueue_sequence = 0
+    reserved_visits = 0
     robots_cache = {}  # Cache robots.txt parsers per domain
+    robots_locks = defaultdict(asyncio.Lock)
     rate_limiter = DomainRateLimiter(delay=politeness_delay)
     visited_urls_data = []
     matching_urls = []
-    urls_in_progress = set()
     results_lock = asyncio.Lock()
 
-    # Semaphore for concurrency control
-    semaphore = asyncio.Semaphore(concurrency)
+    async def enqueue_url(url, depth):
+        """Add a URL to the async crawl queue with same-domain priority."""
+        nonlocal enqueue_sequence
+
+        domain_priority = 0 if urlparse(url).netloc == start_domain else 1
+        await crawl_queue.put((domain_priority, depth, enqueue_sequence, url))
+        enqueue_sequence += 1
+
+    async def enqueue_links(links, parent_depth):
+        """Add newly discovered URLs to the crawl queue."""
+        new_depth = parent_depth + 1
+        if max_depth is not None and new_depth > max_depth:
+            logger.debug(f"Skipping {len(links)} URLs - would exceed max depth {max_depth}")
+            return
+
+        same_domain = []
+        external = []
+
+        async with enqueue_lock:
+            for link in links:
+                if link in seen_urls:
+                    continue
+
+                if urlparse(link).netloc == start_domain:
+                    same_domain.append(link)
+                elif not same_domain_only:
+                    external.append(link)
+
+            random.shuffle(same_domain)
+            random.shuffle(external)
+
+            for link in same_domain + external:
+                seen_urls.add(link)
+                await enqueue_url(link, new_depth)
+
+    await enqueue_url(start_url, 0)
 
     async def process_url(session, url, depth):
         """Process a single URL asynchronously."""
-        nonlocal visited_urls_data, matching_urls
+        nonlocal visited_urls_data, matching_urls, reserved_visits
 
-        async with semaphore:
-            if stop_event and stop_event.is_set():
+        if stop_event and stop_event.is_set():
+            return
+
+        async with results_lock:
+            if reserved_visits >= max_urls:
+                return
+            if len(visited_urls_data) >= max_urls:
                 return
 
-            # Check if we've already hit the limit
-            async with results_lock:
-                if len(visited_urls_data) >= max_urls:
-                    return
-                url_number = len(visited_urls_data) + 1
+        # Check robots.txt compliance
+        if not await can_crawl_async(url, robots_cache, session, robots_locks):
+            logger.info(f"  [Skipped] Blocked by robots.txt: {url}")
+            return
 
-            logger.info(f"\n[{url_number}/{max_urls}] Depth {depth}: {url}")
+        # Skip non-HTML file extensions
+        if should_skip_url(url):
+            logger.info(f"  [Skipped] Non-HTML file extension: {url}")
+            return
 
-            # Check robots.txt compliance (sync operation, but fast due to caching)
-            if not can_crawl(url, robots_cache):
-                logger.info("  [Skipped] Blocked by robots.txt")
+        async with results_lock:
+            if reserved_visits >= max_urls:
                 return
+            reserved_visits += 1
+            url_number = reserved_visits
 
-            # Skip non-HTML file extensions
-            if should_skip_url(url):
-                logger.info("  [Skipped] Non-HTML file extension")
-                return
+        logger.info(f"\n[{url_number}/{max_urls}] Depth {depth}: {url}")
 
-            # Fetch the page (use Playwright for JS rendering or aiohttp)
-            if use_js:
-                await rate_limiter.wait_async(url)
-                html, error, response_time = await fetch_with_playwright(url)
-            else:
-                html, error, response_time = await fetch_page_async(session, url, rate_limiter)
-            
-            # Create URL data record
-            url_data = {
-                'url': url,
-                'depth': depth,
-                'timestamp': datetime.now().isoformat(),
-                'response_time': response_time,
-                'status': 'visited',
-                'error': None,
-                'matched': False
-            }
-            
-            if error:
-                logger.error(f"  [Error] {error}")
-                url_data['status'] = 'error'
-                url_data['error'] = error
-                async with results_lock:
-                    visited_urls_data.append(url_data)
-                return
-            
-            # Search for the query
-            if search_page(html, search_query):
-                url_data['matched'] = True
-                logger.info(f"  [Match!] Query '{search_query}' found on this page")
-                async with results_lock:
-                    matching_urls.append(url)
-            
-            # Add to visited list
+        # Fetch the page (use Playwright for JS rendering or aiohttp)
+        if use_js:
+            await rate_limiter.wait_async(url)
+            html, error, response_time = await fetch_with_playwright(url)
+        else:
+            html, error, response_time = await fetch_page_async(session, url, rate_limiter)
+        
+        # Create URL data record
+        url_data = {
+            'url': url,
+            'depth': depth,
+            'timestamp': datetime.now().isoformat(),
+            'response_time': response_time,
+            'status': 'visited',
+            'error': None,
+            'matched': False
+        }
+        
+        if error:
+            logger.error(f"  [Error] {error}")
+            url_data['status'] = 'error'
+            url_data['error'] = error
             async with results_lock:
                 visited_urls_data.append(url_data)
-            
-            # Extract links from the page
-            links = extract_links(html, url)
-            
-            # Filter out non-HTML links
-            links = [link for link in links if not should_skip_url(link)]
-            
-            logger.info(f"  [Links] Found {len(links)} valid links on this page")
-            
-            # Display discovered links (first 5 for brevity)
-            if links:
-                display_count = min(5, len(links))
-                for link in links[:display_count]:
-                    logger.info(f"    → {link}")
-                if len(links) > display_count:
-                    logger.info(f"    ... and {len(links) - display_count} more")
-            
-            # Add new links to the frontier
-            frontier.add_urls(links, depth)
+            return
+        
+        try:
+            soup = BeautifulSoup(html, "html.parser")
+        except Exception as e:
+            logger.warning(f"Error parsing page: {e}")
+            url_data['status'] = 'error'
+            url_data['error'] = f"Parse error: {e}"
+            async with results_lock:
+                visited_urls_data.append(url_data)
+            return
+
+        # Search for the query
+        page_text = extract_text_from_soup(soup)
+        if search_text(page_text, search_query):
+            url_data['matched'] = True
+            logger.info(f"  [Match!] Query '{search_query}' found on this page")
+            async with results_lock:
+                matching_urls.append(url)
+        
+        # Add to visited list
+        async with results_lock:
+            visited_urls_data.append(url_data)
+        
+        # Extract links from the page
+        links = extract_links_from_soup(soup, url)
+        
+        # Filter out non-HTML links
+        links = [link for link in links if not should_skip_url(link)]
+        
+        logger.info(f"  [Links] Found {len(links)} valid links on this page")
+        
+        # Display discovered links (first 5 for brevity)
+        if links:
+            display_count = min(5, len(links))
+            for link in links[:display_count]:
+                logger.info(f"    → {link}")
+            if len(links) > display_count:
+                logger.info(f"    ... and {len(links) - display_count} more")
+        
+        # Add new links to the queue as soon as this page finishes.
+        await enqueue_links(links, depth)
+
+    async def worker(session):
+        """Continuously process queued URLs until the queue is drained."""
+        while True:
+            _domain_priority, depth, _sequence, url = await crawl_queue.get()
+            try:
+                if stop_event and stop_event.is_set():
+                    continue
+                async with results_lock:
+                    limit_reached = reserved_visits >= max_urls
+                if limit_reached:
+                    continue
+                await process_url(session, url, depth)
+            except Exception as e:
+                logger.debug(f"Unhandled worker error for {url}: {e}", exc_info=True)
+            finally:
+                crawl_queue.task_done()
     
     # Create aiohttp session with connection pooling
     connector = aiohttp.TCPConnector(limit=concurrency * 2, limit_per_host=2)
     timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
     
     async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-        while len(visited_urls_data) < max_urls and not frontier.is_empty():
-            if stop_event and stop_event.is_set():
-                logger.info("  [Stopped] Crawl cancelled by user.")
-                break
-            
-            # Get batch of URLs to process concurrently
-            batch = []
-            while len(batch) < concurrency and not frontier.is_empty():
-                url, depth = frontier.get_next()
-                if url and url not in urls_in_progress:
-                    urls_in_progress.add(url)
-                    batch.append((url, depth))
-            
-            if not batch:
-                break
-            
-            # Process batch concurrently
-            tasks = [process_url(session, url, depth) for url, depth in batch]
-            await asyncio.gather(*tasks, return_exceptions=True)
-            
-            # Remove from in-progress set
-            for url, _ in batch:
-                urls_in_progress.discard(url)
+        workers = [
+            asyncio.create_task(worker(session))
+            for _ in range(concurrency)
+        ]
+        await crawl_queue.join()
+
+        if stop_event and stop_event.is_set():
+            logger.info("  [Stopped] Crawl cancelled by user.")
+
+        for task in workers:
+            task.cancel()
+        await asyncio.gather(*workers, return_exceptions=True)
     
     # Calculate total time
     total_time = time.time() - start_time
